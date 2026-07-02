@@ -1,7 +1,7 @@
 // Post-turn reflection: after live voice completes a turn, extract mood,
 // expression, affinity nudges, and memory notes without blocking speech.
 
-import { google } from "@ai-sdk/google";
+import { openai } from "@ai-sdk/openai";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
@@ -10,7 +10,7 @@ import type { ChatRequest, ReflectionRequest, ReflectionResponse } from "@/lib/t
 
 export const maxDuration = 30;
 
-const MODEL = process.env.PIP_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.PIP_MODEL || "gpt-4o-mini";
 
 // #region agent log
 function debugLog(hypothesisId: string, message: string, data: unknown) {
@@ -38,10 +38,10 @@ export async function POST(req: Request) {
   const body = (await req.json()) as ReflectionRequest;
 
   // #region agent log
-  debugLog('G', 'reflection request received', { userText: body.userText, assistantText: body.assistantText, contextStudentName: body.student?.name ?? null, contextStudentId: body.student?.id ?? null, faces: body.presence?.faces ?? null, hasGoogleKey: Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY) });
+  debugLog('G', 'reflection request received', { userText: body.userText, assistantText: body.assistantText, contextStudentName: body.student?.name ?? null, contextStudentId: body.student?.id ?? null, faces: body.presence?.faces ?? null, hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
   // #endregion
 
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  if (!process.env.OPENAI_API_KEY) {
     return Response.json(fallbackReflection());
   }
 
@@ -71,12 +71,10 @@ export async function POST(req: Request) {
 
   try {
     const { output } = await generateText({
-      model: google(MODEL),
-      // Free-tier Gemini has a low per-minute request quota. The default retry
-      // policy multiplies every turn into several requests, which exhausts the
-      // quota almost immediately and makes memory silently stop working. One
-      // attempt per turn keeps us within budget; a rate-limited turn simply
-      // skips reflection instead of burning the whole window.
+      model: openai(MODEL),
+      // Reflection is best-effort and must never block or delay speech. Keeping
+      // one attempt per turn bounds latency and cost; a failed turn simply skips
+      // reflection instead of retrying and stacking requests.
       maxRetries: 0,
       output: Output.object({ schema: reflectionResponseSchema }),
       system: [
