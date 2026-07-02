@@ -122,32 +122,40 @@ export function JarvisStage() {
   const [personality, setPersonality] = useState<PersonalityId>(DEFAULT_PERSONALITY_ID);
 
   // Live chat transcript shown in the collapsible chat box above the camera.
-  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; text: string }[]>([]);
-  // A snapshot of the person currently talking, used as their chat avatar.
-  const [userPhoto, setUserPhoto] = useState<string | null>(null);
+  // Each message pins its own avatar at capture time — the speaker's photo for
+  // user turns, the producing persona's emoji for assistant turns — so later
+  // snapshots or personality switches never rewrite earlier bubbles.
+  type ChatMessage = {
+    id: string;
+    role: "user" | "assistant";
+    text: string;
+    photo?: string | null;
+    emoji?: string;
+  };
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatOpen, setChatOpen] = useState(true);
   const msgIdRef = useRef(0);
 
   // Grab a square snapshot of the current speaker from the webcam to use as
-  // their chat profile picture. Cheap and best-effort; silently no-ops if the
-  // video isn't ready.
-  const capturePersonPhoto = useCallback(() => {
+  // their chat profile picture. Returns the data URL (or null if the video
+  // isn't ready / capture failed) so the caller can pin it to that message.
+  const capturePersonPhoto = useCallback((): string | null => {
     const video = videoRef.current;
-    if (!video || video.readyState < 2 || !video.videoWidth) return;
+    if (!video || video.readyState < 2 || !video.videoWidth) return null;
     const out = 96;
     const canvas = document.createElement("canvas");
     canvas.width = out;
     canvas.height = out;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) return null;
     const side = Math.min(video.videoWidth, video.videoHeight);
     const sx = (video.videoWidth - side) / 2;
     const sy = (video.videoHeight - side) / 2;
     ctx.drawImage(video, sx, sy, side, side, 0, 0, out, out);
     try {
-      setUserPhoto(canvas.toDataURL("image/jpeg", 0.7));
+      return canvas.toDataURL("image/jpeg", 0.7);
     } catch {
-      /* tainted canvas or unsupported — leave the fallback avatar */
+      return null; // tainted canvas or unsupported — fall back to initials
     }
   }, []);
 
@@ -614,15 +622,18 @@ export function JarvisStage() {
         if (msg.role === "user") {
           pendingUserTextRef.current = text;
           historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
-          setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text }]);
-          capturePersonPhoto();
+          const photo = capturePersonPhoto();
+          setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text, photo }]);
           setCaption(`You: “${text}”`);
           lastInteractionAtRef.current = Date.now();
           return;
         }
 
         historyRef.current = [...historyRef.current, { role: "assistant" as const, text }].slice(-12);
-        setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "assistant", text }]);
+        setMessages((prev) => [
+          ...prev,
+          { id: `m${msgIdRef.current++}`, role: "assistant", text, emoji: getPersonality(personalityRef.current).emoji },
+        ]);
         pendingAssistantTextRef.current = text;
         if (pendingUserTextRef.current) {
           pendingTurnRef.current = {
@@ -814,13 +825,13 @@ export function JarvisStage() {
                         <div className="flex items-end gap-2">
                           {m.role === "assistant" && (
                             <Avatar size="sm" className="shrink-0">
-                              <AvatarFallback>{activePersona.emoji}</AvatarFallback>
+                              <AvatarFallback>{m.emoji ?? activePersona.emoji}</AvatarFallback>
                             </Avatar>
                           )}
                           <MessageContent>{m.text}</MessageContent>
                           {m.role === "user" && (
                             <Avatar size="sm" className="shrink-0">
-                              {userPhoto ? <AvatarImage alt="You" src={userPhoto} /> : null}
+                              {m.photo ? <AvatarImage alt="You" src={m.photo} /> : null}
                               <AvatarFallback>You</AvatarFallback>
                             </Avatar>
                           )}
