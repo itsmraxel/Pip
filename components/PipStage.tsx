@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AgentMicrophone, AgentPlayer, AgentSession, type AgentSessionConfig } from "@deepgram/agents";
+import { RealtimeAgent, RealtimeSession } from "@openai/agents-realtime";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Pip, type PipHandle } from "@/components/Pip";
@@ -30,23 +30,15 @@ const EMOTION_MAP: Record<string, Expression> = {
   neutral: "curious",
 };
 
-const LIVE_AGENT_LISTEN_MODEL =
-  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_LISTEN_MODEL || "flux-general-en";
-const LIVE_AGENT_THINK_MODEL =
-  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_THINK_MODEL || "gemini-2.5-flash";
-const LIVE_AGENT_SPEAK_MODEL =
-  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_SPEAK_MODEL || "aura-2-aurora-en";
-type LiveAgentThinkProvider = "google" | "open_ai" | "anthropic";
-
-function getLiveAgentThinkProvider(): LiveAgentThinkProvider {
-  const provider = process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_THINK_PROVIDER;
-  if (provider === "open_ai" || provider === "anthropic" || provider === "google") {
-    return provider;
-  }
-  return "google";
-}
-
-const LIVE_AGENT_THINK_PROVIDER = getLiveAgentThinkProvider();
+// OpenAI Realtime handles listening (STT), thinking (LLM), and speaking (TTS)
+// in a single speech-to-speech model, so one model + one voice drive the whole
+// live conversation loop.
+const LIVE_REALTIME_MODEL =
+  process.env.NEXT_PUBLIC_OPENAI_REALTIME_MODEL || "gpt-realtime";
+const LIVE_REALTIME_VOICE =
+  process.env.NEXT_PUBLIC_OPENAI_REALTIME_VOICE || "coral";
+const LIVE_INPUT_TRANSCRIBE_MODEL =
+  process.env.NEXT_PUBLIC_OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 
 function expressionFromText(text: string): Expression {
   const lower = text.toLowerCase();
@@ -100,9 +92,8 @@ export function PipStage() {
   const reflectingRef = useRef(false);
   const wasSpeakingRef = useRef(false);
 
-  const agentSessionRef = useRef<AgentSession | null>(null);
-  const agentMicRef = useRef<AgentMicrophone | null>(null);
-  const agentPlayerRef = useRef<AgentPlayer | null>(null);
+  const agentSessionRef = useRef<RealtimeSession | null>(null);
+  const assistantTranscriptRef = useRef<string>("");
   const pendingAssistantTextRef = useRef<string | null>(null);
   const pendingUserTextRef = useRef<string | null>(null);
 
@@ -158,7 +149,12 @@ export function PipStage() {
     const session = agentSessionRef.current;
     if (!session || voiceState !== "live") return;
     try {
-      session.updatePrompt(buildLiveAgentPrompt());
+      // Push Pip's freshly-recognized identity/context into the live session's
+      // instructions without tearing down the connection.
+      session.transport.sendEvent({
+        type: "session.update",
+        session: { type: "realtime", instructions: buildLiveAgentPrompt() },
+      });
     } catch (err) {
       console.warn("failed to refresh live prompt", err);
     }
@@ -328,9 +324,11 @@ export function PipStage() {
       visionRef.current?.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      agentMicRef.current?.stop();
-      agentSessionRef.current?.disconnect();
-      agentPlayerRef.current?.dispose();
+      try {
+        agentSessionRef.current?.close();
+      } catch {
+        /* already closed */
+      }
     };
   }, []);
 
@@ -482,12 +480,13 @@ export function PipStage() {
   }, [started, listening, thinking, voiceState]);
 
   const stopLiveVoice = useCallback(() => {
-    agentMicRef.current?.stop();
-    agentSessionRef.current?.disconnect();
-    agentPlayerRef.current?.dispose();
-    agentMicRef.current = null;
+    try {
+      agentSessionRef.current?.close();
+    } catch {
+      /* already closed */
+    }
     agentSessionRef.current = null;
-    agentPlayerRef.current = null;
+    assistantTranscriptRef.current = "";
     pendingAssistantTextRef.current = null;
     pendingUserTextRef.current = null;
     pendingTurnRef.current = null;
@@ -500,14 +499,11 @@ export function PipStage() {
     pipRef.current?.setThinking(false);
   }, []);
 
-  const showPendingAssistantText = useCallback(() => {
-    const text = pendingAssistantTextRef.current;
-    if (!text) return;
-    pendingAssistantTextRef.current = null;
-    setCaption(`Pip: “${text}”`);
-    pipRef.current?.setBubble(text);
-    pipRef.current?.setExpression(expressionFromText(text), 3500);
-  }, []);
+  const maybeReflectPendingTurn = useCallback(() => {
+    const turn = pendingTurnRef.current;
+    if (!turn || wasSpeakingRef.current) return;
+    void reflectOnTurn(turn.userText, turn.assistantText);
+  }, [reflectOnTurn]);
 
   const startLiveVoice = useCallback(async () => {
     if (agentSessionRef.current || voiceState === "connecting") {
@@ -519,95 +515,52 @@ export function PipStage() {
     setCaption("Connecting Pip's live voice…");
 
     try {
-      const player = new AgentPlayer({ sampleRate: 24000 });
-      const isFluxListenModel = LIVE_AGENT_LISTEN_MODEL.startsWith("flux-");
+      const tokenRes = await fetch("/api/realtime-token", { method: "POST" });
+      if (!tokenRes.ok) {
+        const error = (await tokenRes.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(
+          `Realtime token ${tokenRes.status}${error?.message ? `: ${error.message}` : ""}`
+        );
+      }
+      const tokenData = (await tokenRes.json()) as { value?: string; model?: string };
+      if (!tokenData.value) throw new Error("Realtime token missing");
+      const realtimeModel =
+        typeof tokenData.model === "string" && tokenData.model.trim()
+          ? tokenData.model.trim()
+          : LIVE_REALTIME_MODEL;
+
       const livePrompt = buildLiveAgentPrompt();
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:startLiveVoice:prompt',message:'live prompt built for deepgram config',data:{promptLength:livePrompt.length,hasSpokenGuard:livePrompt.includes('Only speak the words the student should hear'),hasStructuredDirective:livePrompt.includes('using the structured fields'),thinkProvider:LIVE_AGENT_THINK_PROVIDER,thinkModel:LIVE_AGENT_THINK_MODEL,promptTail:livePrompt.slice(-400)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      const config: AgentSessionConfig = {
-        auth: {
-          tokenFactory: async () => {
-            const res = await fetch("/api/deepgram-token", { method: "POST" });
-            if (!res.ok) {
-              const error = (await res.json().catch(() => null)) as { message?: string } | null;
-              throw new Error(`Deepgram token ${res.status}${error?.message ? `: ${error.message}` : ""}`);
-            }
-            const data = (await res.json()) as { access_token?: string };
-            if (!data.access_token) throw new Error("Deepgram token missing");
-            return data.access_token;
-          },
-        },
-        audio: {
-          input: { encoding: "linear16", sampleRate: 16000 },
-          output: { encoding: "linear16", sampleRate: 24000 },
-        },
-        agent: {
-          listen: {
-            provider: isFluxListenModel
-              ? {
-                  type: "deepgram",
-                  version: "v2",
-                  model: LIVE_AGENT_LISTEN_MODEL,
-                }
-              : {
-                  type: "deepgram",
-                  version: "v1",
-                  model: LIVE_AGENT_LISTEN_MODEL,
-                  smart_format: true,
-                },
-          },
-          think: {
-            provider: {
-              type: LIVE_AGENT_THINK_PROVIDER,
-              model: LIVE_AGENT_THINK_MODEL,
-              temperature: 0.7,
-            },
-            prompt: livePrompt,
-          },
-          speak: {
-            provider: {
-              type: "deepgram",
-              model: LIVE_AGENT_SPEAK_MODEL,
-            },
-          },
-        },
-        tags: ["pip", "live-voice"],
-      };
 
-      const session = new AgentSession(config);
-      const mic = new AgentMicrophone((data) => session.sendAudio(data), {
-        sampleRate: 16000,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+      const agent = new RealtimeAgent({
+        name: "Pip",
+        instructions: livePrompt,
+        voice: LIVE_REALTIME_VOICE,
       });
 
-      agentPlayerRef.current = player;
+      // OpenAI Realtime speech-to-speech: the WebRTC transport captures the mic
+      // and plays Pip's audio automatically, so we only wire up UI/reflection.
+      const session = new RealtimeSession(agent, {
+        model: realtimeModel,
+        config: {
+          outputModalities: ["audio"],
+          audio: {
+            input: {
+              transcription: { model: LIVE_INPUT_TRANSCRIBE_MODEL },
+              turnDetection: {
+                type: "semantic_vad",
+                interruptResponse: true,
+                createResponse: true,
+              },
+            },
+          },
+        },
+      });
+
       agentSessionRef.current = session;
-      agentMicRef.current = mic;
+      assistantTranscriptRef.current = "";
 
-      session.on("settings-applied", () => {
-        setVoiceState("live");
-        setListening(true);
-        setCaption("Pip is live — just talk.");
-        pipRef.current?.setListening(true);
-      });
-
-      session.on("user-started-speaking", () => {
-        if (wasSpeakingRef.current) {
-          pipRef.current?.react("surprise", "surprised");
-        }
-        player.interrupt();
-        setListening(true);
-        setThinking(false);
-        pipRef.current?.setSpeaking(false);
-        pipRef.current?.setThinking(false);
-        pipRef.current?.setListening(true);
-        lastInteractionAtRef.current = Date.now();
-      });
-
-      session.on("agent-thinking", () => {
+      // Agent begins generating a response for the turn.
+      session.on("agent_start", () => {
         setListening(false);
         setThinking(true);
         pipRef.current?.setListening(false);
@@ -615,95 +568,140 @@ export function PipStage() {
         pipRef.current?.setExpression("curious", 1500);
       });
 
-      session.on("conversation-text", (msg) => {
-        const text = msg.content.trim();
-        // #region agent log
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'B',location:'components/PipStage.tsx:conversation-text',message:'raw conversation-text from deepgram',data:{role:msg.role,content:msg.content,hasCrypticField:/facial_expression|next_mood|nextMood|affinity_update|affinity|traitNote|memoryNote|learnedName|askName/i.test(msg.content)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        if (!text) return;
-
-        if (msg.role === "user") {
-          pendingUserTextRef.current = text;
-          historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
-          setCaption(`You: “${text}”`);
-          lastInteractionAtRef.current = Date.now();
-          return;
-        }
-
-        historyRef.current = [...historyRef.current, { role: "assistant" as const, text }].slice(-12);
-        pendingAssistantTextRef.current = text;
-        if (pendingUserTextRef.current) {
-          pendingTurnRef.current = {
-            userText: pendingUserTextRef.current,
-            assistantText: text,
-          };
-          pendingUserTextRef.current = null;
-        }
+      // Pip started speaking (first audio of the response).
+      session.on("audio_start", () => {
+        setListening(false);
         setThinking(false);
+        pipRef.current?.setListening(false);
         pipRef.current?.setThinking(false);
-        lastInteractionAtRef.current = Date.now();
-      });
-
-      session.on("audio", (chunk) => {
-        showPendingAssistantText();
-        player.queue(chunk);
         pipRef.current?.setSpeaking(true);
         pipRef.current?.speakingPulse();
         if (!wasSpeakingRef.current) sounds.play("speak");
         wasSpeakingRef.current = true;
       });
 
-      session.on("agent-started-speaking", () => {
-        showPendingAssistantText();
-        setListening(false);
-        setThinking(false);
-        pipRef.current?.setListening(false);
-        pipRef.current?.setThinking(false);
-        pipRef.current?.setSpeaking(true);
-        if (!wasSpeakingRef.current) sounds.play("speak");
-        wasSpeakingRef.current = true;
-      });
-
-      session.on("agent-audio-done", () => {
+      // Pip finished speaking — settle the bubble and (if we already have both
+      // transcripts) kick off background reflection.
+      session.on("audio_stopped", () => {
         pipRef.current?.setSpeaking(false);
         wasSpeakingRef.current = false;
         window.setTimeout(() => pipRef.current?.hideBubble(), 1600);
+        maybeReflectPendingTurn();
+      });
 
-        const turn = pendingTurnRef.current;
-        if (turn) {
-          void reflectOnTurn(turn.userText, turn.assistantText);
+      // Student barged in while Pip was talking.
+      session.on("audio_interrupted", () => {
+        if (wasSpeakingRef.current) {
+          pipRef.current?.react("surprise", "surprised");
+        }
+        wasSpeakingRef.current = false;
+        setListening(true);
+        setThinking(false);
+        pipRef.current?.setSpeaking(false);
+        pipRef.current?.setThinking(false);
+        pipRef.current?.setListening(true);
+        lastInteractionAtRef.current = Date.now();
+      });
+
+      session.on("error", (event) => {
+        console.error("openai realtime error", event);
+        toast.error("Pip's live voice hit an error.");
+      });
+
+      // Stable end-of-turn signal from the SDK. This is more reliable than only
+      // relying on transcript.done ordering.
+      session.on("agent_end", (_context, _agent, outputText) => {
+        const text = outputText.trim();
+        assistantTranscriptRef.current = "";
+        if (!text) return;
+
+        setCaption(`Pip: “${text}”`);
+        pipRef.current?.setBubble(text);
+        pipRef.current?.setExpression(expressionFromText(text), 3500);
+        historyRef.current = [
+          ...historyRef.current,
+          { role: "assistant" as const, text },
+        ].slice(-12);
+
+        if (pendingUserTextRef.current) {
+          pendingTurnRef.current = {
+            userText: pendingUserTextRef.current,
+            assistantText: text,
+          };
+          pendingUserTextRef.current = null;
+        } else {
+          // Input transcription can lag response generation; hold the assistant
+          // line and pair it when the user's transcript arrives.
+          pendingAssistantTextRef.current = text;
+        }
+
+        lastInteractionAtRef.current = Date.now();
+        maybeReflectPendingTurn();
+      });
+
+      // Raw transport events give us fine-grained speech + transcript signals.
+      session.transport.on("*", (event: { type: string; [key: string]: unknown }) => {
+        switch (event.type) {
+          case "input_audio_buffer.speech_started": {
+            setListening(true);
+            setThinking(false);
+            pipRef.current?.setListening(true);
+            pipRef.current?.setThinking(false);
+            lastInteractionAtRef.current = Date.now();
+            break;
+          }
+          case "conversation.item.input_audio_transcription.completed": {
+            const text = String(event.transcript ?? "").trim();
+            if (!text) break;
+            pendingUserTextRef.current = text;
+            historyRef.current = [
+              ...historyRef.current,
+              { role: "user" as const, text },
+            ].slice(-12);
+            setCaption(`You: “${text}”`);
+            lastInteractionAtRef.current = Date.now();
+            if (pendingAssistantTextRef.current) {
+              pendingTurnRef.current = {
+                userText: text,
+                assistantText: pendingAssistantTextRef.current,
+              };
+              pendingUserTextRef.current = null;
+              pendingAssistantTextRef.current = null;
+              maybeReflectPendingTurn();
+            }
+            break;
+          }
+          case "response.output_audio_transcript.delta": {
+            assistantTranscriptRef.current += String(event.delta ?? "");
+            const partial = assistantTranscriptRef.current.trim();
+            if (partial) {
+              setCaption(`Pip: “${partial}”`);
+              pipRef.current?.setBubble(partial);
+              pipRef.current?.speakingPulse();
+            }
+            break;
+          }
+          default:
+            break;
         }
       });
 
-      session.on("error", (msg) => {
-        console.error("deepgram agent error", msg);
-        toast.error("Pip's live voice hit a Deepgram error.");
+      await session.connect({
+        apiKey: tokenData.value,
+        model: realtimeModel,
       });
 
-      session.on("warning", (msg) => {
-        console.warn("deepgram agent warning", msg);
-      });
-
-      session.on("sdk-error", (err) => {
-        console.error("deepgram agent sdk error", err);
-        toast.error("Pip couldn't keep the live voice connected.");
-        stopLiveVoice();
-      });
-
-      mic.on("error", (err) => {
-        console.error("deepgram microphone error", err);
-        toast.error("Pip couldn't access the microphone.");
-        stopLiveVoice();
-      });
-
-      await session.connect();
-      await mic.start();
+      setVoiceState("live");
+      setListening(true);
+      setCaption("Pip is live — just talk.");
+      pipRef.current?.setListening(true);
     } catch (err) {
       console.error("live voice failed", err);
-      toast.error("Pip couldn't start live voice.");
+      const detail = err instanceof Error ? err.message : null;
+      toast.error(detail ? `Pip couldn't start live voice: ${detail}` : "Pip couldn't start live voice.");
       stopLiveVoice();
     }
-  }, [buildLiveAgentPrompt, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
+  }, [buildLiveAgentPrompt, maybeReflectPendingTurn, stopLiveVoice, voiceState]);
 
   const start = useCallback(async () => {
     try {
@@ -800,7 +798,7 @@ export function PipStage() {
                 ? "Pip is thinking…"
                 : "Pip is speaking live…"
               : voiceState === "connecting"
-              ? "Opening Deepgram live speech…"
+              ? "Opening OpenAI live speech…"
               : "Start once, then talk naturally"}
           </span>
         </div>

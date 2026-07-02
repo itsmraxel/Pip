@@ -1,4 +1,4 @@
-// Pip's personality: builds the system prompt handed to Gemini, and small
+// Pip's personality: builds the system prompt handed to OpenAI, and small
 // helpers for affinity/mood. Pip plays favorites to feel alive — but the
 // kindness guardrail keeps "cool" behavior at gentle teasing, never hurtful,
 // because the audience is students.

@@ -1,8 +1,8 @@
 // Pip's brain: takes a student's utterance + who they are + presence, and
 // returns a structured reply (spoken text + expression + affinity nudge).
-// Uses the AI SDK (v7) with Google Gemini underneath.
+// Uses the AI SDK (v7) with OpenAI underneath.
 
-import { google } from "@ai-sdk/google";
+import { openai } from "@ai-sdk/openai";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory, persistReflectionMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
@@ -11,7 +11,7 @@ import type { ChatRequest, ChatResponse } from "@/lib/types";
 
 export const maxDuration = 30;
 
-const MODEL = process.env.PIP_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.PIP_MODEL || "gpt-4o-mini";
 
 const fallbackReply = (): ChatResponse => ({
   reply: "Squawk—my thoughts got tangled in my feathers. Say that again?",
@@ -28,10 +28,10 @@ const fallbackReply = (): ChatResponse => ({
 export async function POST(req: Request) {
   const body = (await req.json()) as ChatRequest;
 
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  if (!process.env.OPENAI_API_KEY) {
     return Response.json({
       ...fallbackReply(),
-      reply: "Squawk! My brain isn't plugged in yet — ask a grown-up to set my Google API key.",
+      reply: "Squawk! My brain isn't plugged in yet — ask a grown-up to set my OpenAI API key.",
       emotion: "curious",
     } satisfies ChatResponse);
   }
@@ -52,7 +52,7 @@ export async function POST(req: Request) {
 
   try {
     const { output } = await generateText({
-      model: google(MODEL),
+      model: openai(MODEL),
       output: Output.object({ schema: chatResponseSchema }),
       system: buildSystemPrompt(chatContext),
       prompt: [
