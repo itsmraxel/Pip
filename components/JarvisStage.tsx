@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentMicrophone, AgentPlayer, AgentSession, type AgentSessionConfig } from "@deepgram/agents";
 import { toast } from "sonner";
+import { ChevronDown, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import { Message, MessageContent } from "@/components/ai-elements/message";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Jarvis, type JarvisHandle } from "@/components/Jarvis";
 import { Vision, type VisionFrame } from "@/lib/vision";
 import { matchByFace, matchByName } from "@/lib/identity";
@@ -111,6 +120,36 @@ export function JarvisStage() {
   const [caption, setCaption] = useState("");
   const [voiceState, setVoiceState] = useState<"idle" | "connecting" | "live">("idle");
   const [personality, setPersonality] = useState<PersonalityId>(DEFAULT_PERSONALITY_ID);
+
+  // Live chat transcript shown in the collapsible chat box above the camera.
+  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; text: string }[]>([]);
+  // A snapshot of the person currently talking, used as their chat avatar.
+  const [userPhoto, setUserPhoto] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(true);
+  const msgIdRef = useRef(0);
+
+  // Grab a square snapshot of the current speaker from the webcam to use as
+  // their chat profile picture. Cheap and best-effort; silently no-ops if the
+  // video isn't ready.
+  const capturePersonPhoto = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) return;
+    const out = 96;
+    const canvas = document.createElement("canvas");
+    canvas.width = out;
+    canvas.height = out;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const side = Math.min(video.videoWidth, video.videoHeight);
+    const sx = (video.videoWidth - side) / 2;
+    const sy = (video.videoHeight - side) / 2;
+    ctx.drawImage(video, sx, sy, side, side, 0, 0, out, out);
+    try {
+      setUserPhoto(canvas.toDataURL("image/jpeg", 0.7));
+    } catch {
+      /* tainted canvas or unsupported — leave the fallback avatar */
+    }
+  }, []);
 
   const buildLiveAgentPrompt = useCallback(() => {
     const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
@@ -575,12 +614,15 @@ export function JarvisStage() {
         if (msg.role === "user") {
           pendingUserTextRef.current = text;
           historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
+          setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text }]);
+          capturePersonPhoto();
           setCaption(`You: “${text}”`);
           lastInteractionAtRef.current = Date.now();
           return;
         }
 
         historyRef.current = [...historyRef.current, { role: "assistant" as const, text }].slice(-12);
+        setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "assistant", text }]);
         pendingAssistantTextRef.current = text;
         if (pendingUserTextRef.current) {
           pendingTurnRef.current = {
@@ -651,7 +693,7 @@ export function JarvisStage() {
       toast.error(`${getPersonality(personalityRef.current).name} couldn't start live voice.`);
       stopLiveVoice();
     }
-  }, [buildLiveAgentPrompt, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
+  }, [buildLiveAgentPrompt, capturePersonPhoto, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
 
   // Switch the active personality. Updates the ref (read by the prompt/voice
   // builders) and state (drives the button UI + name shown in the UI). If a
@@ -742,22 +784,74 @@ export function JarvisStage() {
         </div>
       )}
 
-      <div className="absolute bottom-4 right-4 overflow-hidden rounded-xl border border-border bg-black/60 shadow-2xl">
-        <video
-          ref={videoRef}
-          muted
-          playsInline
-          className="block h-[195px] w-[260px] scale-x-[-1] object-cover"
-          style={{ opacity: started ? 1 : 0 }}
-        />
-        <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/50 px-2 py-0.5 text-xs text-white/90">
-          {activePersona.name}&apos;s view · {faces} {faces === 1 ? "person" : "people"}
-        </div>
-        {loadingVision && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white/90">
-            Waking {activePersona.name}&apos;s eyes…
+      <div className="absolute bottom-4 right-4 z-30 flex w-[260px] flex-col gap-2">
+        {started && (
+          <div className="overflow-hidden rounded-xl border border-border bg-black/70 shadow-2xl backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={() => setChatOpen((open) => !open)}
+              aria-expanded={chatOpen}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-white/90 transition-colors hover:bg-white/10"
+            >
+              <span className="flex items-center gap-1.5">
+                <MessageSquare className="size-3.5" />
+                Chat with {activePersona.name}
+              </span>
+              <ChevronDown className={`size-4 transition-transform ${chatOpen ? "" : "-rotate-90"}`} />
+            </button>
+            {chatOpen && (
+              <Conversation className="h-56 border-t border-border bg-background/95">
+                <ConversationContent className="gap-4 p-3">
+                  {messages.length === 0 ? (
+                    <ConversationEmptyState
+                      className="p-4"
+                      title="No messages yet"
+                      description={`Talk to ${activePersona.name} — your conversation appears here.`}
+                    />
+                  ) : (
+                    messages.map((m) => (
+                      <Message from={m.role} key={m.id}>
+                        <div className="flex items-end gap-2">
+                          {m.role === "assistant" && (
+                            <Avatar size="sm" className="shrink-0">
+                              <AvatarFallback>{activePersona.emoji}</AvatarFallback>
+                            </Avatar>
+                          )}
+                          <MessageContent>{m.text}</MessageContent>
+                          {m.role === "user" && (
+                            <Avatar size="sm" className="shrink-0">
+                              {userPhoto ? <AvatarImage alt="You" src={userPhoto} /> : null}
+                              <AvatarFallback>You</AvatarFallback>
+                            </Avatar>
+                          )}
+                        </div>
+                      </Message>
+                    ))
+                  )}
+                </ConversationContent>
+                <ConversationScrollButton />
+              </Conversation>
+            )}
           </div>
         )}
+
+        <div className="relative overflow-hidden rounded-xl border border-border bg-black/60 shadow-2xl">
+          <video
+            ref={videoRef}
+            muted
+            playsInline
+            className="block h-[195px] w-full scale-x-[-1] object-cover"
+            style={{ opacity: started ? 1 : 0 }}
+          />
+          <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/50 px-2 py-0.5 text-xs text-white/90">
+            {activePersona.name}&apos;s view · {faces} {faces === 1 ? "person" : "people"}
+          </div>
+          {loadingVision && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white/90">
+              Waking {activePersona.name}&apos;s eyes…
+            </div>
+          )}
+        </div>
       </div>
 
       {started && (listening || thinking || caption) && (
