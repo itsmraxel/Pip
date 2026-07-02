@@ -402,11 +402,13 @@ export function createParrotSpriteSheet(): string {
     rect(13, 3 + y0, 7, 1, C.red);
     rect(13, 4 + y0, 7, 1, C.redL);
     rect(18, 6 + y0, 3, 4, C.cream);
-    px(13, 7 + y0, C.cream);
-    px(13, 8 + y0, C.cream);
+    rect(13, 6 + y0, 3, 4, C.cream); // far cheek patch, mirrors the near one
     rect(18, 7 + y0, 3, 2, C.eye);
     px(20, 7 + y0, C.shine);
-    px(14, 8 + y0, C.eye);
+    // far eye matches the near eye's size and row so the face reads even instead
+    // of lopsided; the offset beak still carries the three-quarter head turn.
+    rect(13, 7 + y0, 3, 2, C.eye);
+    px(15, 7 + y0, C.shine);
     rect(20, 9 + y0, 3, 2, C.beakL);
     rect(21, 11 + y0, 2, 1, C.beak);
     px(22, 12 + y0, C.beakD);
