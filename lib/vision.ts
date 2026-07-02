@@ -7,6 +7,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { numEnv } from "./env";
+
 export interface VisionFrame {
   faces: number;
   /** Nearest face center as a fraction of the video (0..1), or null. */
@@ -25,9 +27,9 @@ const MODEL_BASE =
 // low-confidence, or strongly turned face produces an unreliable embedding —
 // we still report the face (for look-at / counting) but drop its embedding so
 // it can neither drive a match nor corrupt an enrolled reference.
-const MIN_FACE_SCORE = Number(process.env.NEXT_PUBLIC_FACE_MIN_SCORE || 0.4);
-const MIN_FACE_AREA = Number(process.env.NEXT_PUBLIC_FACE_MIN_AREA || 0.012);
-const MAX_FACE_ANGLE = Number(process.env.NEXT_PUBLIC_FACE_MAX_ANGLE || 0.7);
+const MIN_FACE_SCORE = numEnv(process.env.NEXT_PUBLIC_FACE_MIN_SCORE, 0.4);
+const MIN_FACE_AREA = numEnv(process.env.NEXT_PUBLIC_FACE_MIN_AREA, 0.012);
+const MAX_FACE_ANGLE = numEnv(process.env.NEXT_PUBLIC_FACE_MAX_ANGLE, 0.7);
 
 export class Vision {
   private human: any = null;

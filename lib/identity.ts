@@ -5,8 +5,9 @@
 
 import type { Student } from "./types";
 import { resolveFace } from "./faceRecognition";
+import { numEnv } from "./env";
 
-const VOICE_THRESHOLD = Number(process.env.NEXT_PUBLIC_VOICE_THRESHOLD || 0.5);
+const VOICE_THRESHOLD = numEnv(process.env.NEXT_PUBLIC_VOICE_THRESHOLD, 0.5);
 
 export interface Match {
   student: Student | null;

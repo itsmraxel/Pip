@@ -10,18 +10,19 @@
 //     frozen to a single snapshot.
 
 import type { Student } from "./types";
+import { numEnv } from "./env";
 
 // Cosine similarity thresholds for the Human face descriptor (env-tunable).
-export const FACE_ACCEPT = Number(process.env.NEXT_PUBLIC_FACE_THRESHOLD || 0.5);
+export const FACE_ACCEPT = numEnv(process.env.NEXT_PUBLIC_FACE_THRESHOLD, 0.5);
 // Lower bar to *stay* on the currently anchored person (hysteresis).
-export const FACE_KEEP = Number(process.env.NEXT_PUBLIC_FACE_KEEP_THRESHOLD || 0.42);
+export const FACE_KEEP = numEnv(process.env.NEXT_PUBLIC_FACE_KEEP_THRESHOLD, 0.42);
 // Required lead of the top match over the runner-up to accept/switch.
-export const FACE_MARGIN = Number(process.env.NEXT_PUBLIC_FACE_MARGIN || 0.06);
+export const FACE_MARGIN = numEnv(process.env.NEXT_PUBLIC_FACE_MARGIN, 0.06);
 // EMA weight for blending a fresh embedding into the stored one (0..1).
-export const FACE_BLEND_ALPHA = Number(process.env.NEXT_PUBLIC_FACE_BLEND_ALPHA || 0.2);
+export const FACE_BLEND_ALPHA = numEnv(process.env.NEXT_PUBLIC_FACE_BLEND_ALPHA, 0.2);
 // Temporal smoothing window: average recent embeddings before matching.
-export const FACE_WINDOW_MS = Number(process.env.NEXT_PUBLIC_FACE_WINDOW_MS || 1500);
-export const FACE_WINDOW_N = Number(process.env.NEXT_PUBLIC_FACE_WINDOW_N || 8);
+export const FACE_WINDOW_MS = numEnv(process.env.NEXT_PUBLIC_FACE_WINDOW_MS, 1500);
+export const FACE_WINDOW_N = numEnv(process.env.NEXT_PUBLIC_FACE_WINDOW_N, 8);
 
 export function cosine(a: number[], b: number[]): number {
   if (!a?.length || a.length !== b?.length) return 0;
