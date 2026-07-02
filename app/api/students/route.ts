@@ -12,7 +12,7 @@ function debugLog(hypothesisId: string, message: string, data: unknown) {
   fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '87d609' },
-    body: JSON.stringify({ sessionId: '87d609', runId: 'initial', hypothesisId, location: 'app/api/students/route.ts', message, data, timestamp: Date.now() }),
+    body: JSON.stringify({ sessionId: '87d609', runId: 'postfix', hypothesisId, location: 'app/api/students/route.ts', message, data, timestamp: Date.now() }),
   }).catch(() => {});
 }
 // #endregion

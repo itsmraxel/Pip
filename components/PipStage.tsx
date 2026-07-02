@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Pip, type PipHandle } from "@/components/Pip";
 import { Vision, type VisionFrame } from "@/lib/vision";
-import { matchByFace, debugBestFaceScore } from "@/lib/identity";
+import { matchByFace, matchByName, debugBestFaceScore } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
 import { sounds } from "@/lib/sounds";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
@@ -84,6 +84,9 @@ export function PipStage() {
   const moodRef = useRef<Mood>("neutral");
   const roomStateRef = useRef<RoomState>("empty");
   const currentStudentIdRef = useRef<string | null>(null);
+  // Name established for the person in the current conversation (via a spoken
+  // self-introduction or a confident face match). Authoritative over face.
+  const currentNameRef = useRef<string | null>(null);
   // #region agent log
   const lastVisionLogRef = useRef(0);
   // #endregion
@@ -110,12 +113,17 @@ export function PipStage() {
 
   const buildLiveAgentPrompt = useCallback(() => {
     const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
-    const student = faceMatch?.student ?? null;
-    if (student) currentStudentIdRef.current = student.id;
+    // A known name for this conversation wins over the noisy face signal.
+    const namedStudent = matchByName(currentNameRef.current, studentsRef.current);
+    const student = namedStudent ?? faceMatch?.student ?? null;
+    if (student) {
+      currentStudentIdRef.current = student.id;
+      currentNameRef.current = student.name;
+    }
     // #region agent log
     {
       const dbg = debugBestFaceScore(lastEmbeddingRef.current, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/PipStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,via:namedStudent?'name':(faceMatch?'face':'none'),currentNameRef:currentNameRef.current,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
     }
     // #endregion
 
@@ -159,7 +167,7 @@ export function PipStage() {
       const d = (await r.json()) as { students: Student[] };
       studentsRef.current = d.students ?? [];
       // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'C',location:'components/PipStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'C',location:'components/PipStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
     } catch {
       /* keep in-memory roster */
@@ -177,24 +185,39 @@ export function PipStage() {
   }, []);
 
   const persistReflection = useCallback(
-    async (reflection: ReflectionResponse) => {
+    async (reflection: ReflectionResponse, resolved: { id: string; name: string } | null) => {
       const embedding = lastEmbeddingRef.current;
+      const learnedName = reflection.learnedName?.trim() || null;
+
+      // Identity resolution, in order of reliability:
+      //   1. A spoken name (from this turn or the ongoing conversation).
+      //   2. The student resolved when the turn started (stable mid-turn).
+      //   3. A confident face match.
+      // A learned name that does NOT match the current record means a *different*
+      // person is speaking — create/switch rather than overwriting someone else.
+      const nameToUse = learnedName ?? currentNameRef.current;
+      const namedStudent = matchByName(nameToUse, studentsRef.current);
       const faceMatch = matchByFace(embedding, studentsRef.current);
-      let student = faceMatch?.student ?? null;
+      const resolvedStudent = resolved
+        ? studentsRef.current.find((s) => s.id === resolved.id) ?? null
+        : null;
+
+      let student: Student | null = namedStudent ?? resolvedStudent ?? faceMatch?.student ?? null;
+      const isNewPerson = Boolean(learnedName) && !namedStudent;
+
       // #region agent log
       {
-        const willCreate = Boolean(reflection.learnedName?.trim()) && !student;
-        const fallbackId = student?.id ?? currentStudentIdRef.current;
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'B',location:'components/PipStage.tsx:persistReflection',message:'persist decision',data:{learnedName:reflection.learnedName??null,faceMatchName:student?.name??null,faceMatchId:student?.id??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,branch:willCreate?'create-new':(fallbackId?'update-existing':'skip-no-id'),targetStudentId:fallbackId,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
+        const branch = isNewPerson ? "create-new" : student ? "update-existing" : "skip-no-id";
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'B',location:'components/PipStage.tsx:persistReflection',message:'persist decision',data:{learnedName,nameToUse,namedStudentId:namedStudent?.id??null,resolvedStudentId:resolved?.id??null,faceMatchName:faceMatch?.student.name??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,currentNameRef:currentNameRef.current,branch,targetStudentId:student?.id??null,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
       }
       // #endregion
 
-      if (reflection.learnedName?.trim() && !student) {
+      if (isNewPerson) {
         const res = await fetch("/api/students", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: reflection.learnedName.trim(),
+            name: learnedName,
             faceEmbedding: embedding,
             affinity: reflection.affinityDelta,
             traits: reflection.traitNote ? [reflection.traitNote.trim()] : [],
@@ -206,12 +229,16 @@ export function PipStage() {
           student = data.student;
           studentsRef.current = upsertStudentRoster(studentsRef.current, student);
           currentStudentIdRef.current = student.id;
+          currentNameRef.current = student.name;
         }
         return student;
       }
 
-      const studentId = student?.id ?? currentStudentIdRef.current;
-      if (!studentId) return null;
+      if (!student) return null;
+      // Keep the conversation anchored to the resolved identity.
+      currentStudentIdRef.current = student.id;
+      currentNameRef.current = student.name;
+      const studentId = student.id;
 
       const existing = studentsRef.current.find((s) => s.id === studentId);
       if (!existing) return null;
@@ -244,8 +271,10 @@ export function PipStage() {
       if (reflectingRef.current) return;
       reflectingRef.current = true;
       try {
+        const namedStudent = matchByName(currentNameRef.current, studentsRef.current);
         const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
         const student =
+          namedStudent ??
           faceMatch?.student ??
           studentsRef.current.find((knownStudent) => knownStudent.id === currentStudentIdRef.current) ??
           null;
@@ -276,7 +305,7 @@ export function PipStage() {
         const reflection = (await res.json()) as ReflectionResponse;
 
         applyReflectionAnimation(reflection);
-        await persistReflection(reflection);
+        await persistReflection(reflection, student ? { id: student.id, name: student.name } : null);
         await reloadStudents();
         refreshLivePrompt();
         lastInteractionAtRef.current = Date.now();
@@ -311,6 +340,7 @@ export function PipStage() {
     if (f.faces === 0) {
       noFaceSinceRef.current ??= Date.now();
       currentStudentIdRef.current = null;
+      currentNameRef.current = null;
     } else {
       noFaceSinceRef.current = null;
       emptyRoomNapRef.current = false;
@@ -324,7 +354,7 @@ export function PipStage() {
     if (f.faces > 0 && Date.now() - lastVisionLogRef.current > 2500) {
       lastVisionLogRef.current = Date.now();
       const dbg = debugBestFaceScore(f.embedding, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/PipStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
     }
     // #endregion
 

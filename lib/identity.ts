@@ -65,6 +65,17 @@ export function matchByFace(embedding: number[] | null, students: Student[]): { 
 }
 
 /**
+ * Find a student by their (case-insensitive) name. A spoken self-introduction
+ * is a far more reliable identity signal than a noisy face embedding, so this
+ * is used as the authoritative match when a name is known.
+ */
+export function matchByName(name: string | null | undefined, students: Student[]): Student | null {
+  const clean = name?.trim().toLowerCase();
+  if (!clean) return null;
+  return students.find((s) => s.name.trim().toLowerCase() === clean) ?? null;
+}
+
+/**
  * Fuse a face match with a voice match. `voiceStudent` is the student the Eagle
  * recognizer picked (via profile order) with `voiceScore`.
  */
