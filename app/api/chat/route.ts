@@ -1,4 +1,4 @@
-// Pip's brain: takes a student's utterance + who they are + presence, and
+// Jarvis's brain: takes a student's utterance + who they are + presence, and
 // returns a structured reply (spoken text + expression + affinity nudge).
 // Uses the AI SDK (v7) with Google Gemini underneath.
 
@@ -6,15 +6,16 @@ import { google } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory, persistReflectionMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
-import { chatResponseSchema } from "@/lib/pipSchema";
+import { getPersonality } from "@/lib/personalities";
+import { chatResponseSchema } from "@/lib/jarvisSchema";
 import type { ChatRequest, ChatResponse } from "@/lib/types";
 
 export const maxDuration = 30;
 
-const MODEL = process.env.PIP_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.JARVIS_MODEL || "gemini-2.5-flash";
 
 const fallbackReply = (): ChatResponse => ({
-  reply: "Squawk—my thoughts got tangled in my feathers. Say that again?",
+  reply: "Hmm, my train of thought slipped away for a second — say that again?",
   emotion: "surprised",
   emote: "question",
   affinityDelta: 0,
@@ -31,7 +32,7 @@ export async function POST(req: Request) {
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return Response.json({
       ...fallbackReply(),
-      reply: "Squawk! My brain isn't plugged in yet — ask a grown-up to set my Google API key.",
+      reply: "My brain isn't plugged in yet — someone needs to set the Google API key.",
       emotion: "curious",
     } satisfies ChatResponse);
   }
@@ -45,9 +46,10 @@ export async function POST(req: Request) {
     student: enrichedStudent,
   };
 
+  const personaName = getPersonality(body.personality).name;
   const history = (body.history ?? [])
     .slice(-8)
-    .map((t) => `${t.role === "user" ? "Student" : "Pip"}: ${t.text}`)
+    .map((t) => `${t.role === "user" ? "Person" : personaName}: ${t.text}`)
     .join("\n");
 
   try {
@@ -57,8 +59,8 @@ export async function POST(req: Request) {
       system: buildSystemPrompt(chatContext),
       prompt: [
         history ? `Recent conversation:\n${history}\n` : "",
-        `The student just said: "${body.text}"`,
-        "Reply as Pip.",
+        `The person just said: "${body.text}"`,
+        `Reply as ${personaName}.`,
       ].filter(Boolean).join("\n"),
     });
 

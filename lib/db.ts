@@ -62,27 +62,27 @@ function rowToStudent(r: any): Student {
 // ---------------- In-memory / file backend ----------------
 
 const FILE = path.join(process.cwd(), ".data", "students.json");
-const g = globalThis as unknown as { __pipStudents?: Student[] };
+const g = globalThis as unknown as { __jarvisStudents?: Student[] };
 let loaded = false;
 
 async function memLoad(): Promise<Student[]> {
-  if (!g.__pipStudents) g.__pipStudents = [];
+  if (!g.__jarvisStudents) g.__jarvisStudents = [];
   if (!loaded) {
     loaded = true;
     try {
       const raw = await readFile(FILE, "utf8");
-      g.__pipStudents = JSON.parse(raw);
+      g.__jarvisStudents = JSON.parse(raw);
     } catch {
       /* no file yet */
     }
   }
-  return g.__pipStudents ?? (g.__pipStudents = []);
+  return g.__jarvisStudents ?? (g.__jarvisStudents = []);
 }
 
 async function memSave() {
   try {
     await mkdir(path.dirname(FILE), { recursive: true });
-    await writeFile(FILE, JSON.stringify(g.__pipStudents ?? [], null, 2));
+    await writeFile(FILE, JSON.stringify(g.__jarvisStudents ?? [], null, 2));
   } catch {
     /* read-only fs (e.g. serverless) — keep in memory only */
   }

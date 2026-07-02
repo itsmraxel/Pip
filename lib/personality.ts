@@ -1,9 +1,10 @@
-// Pip's personality: builds the system prompt handed to Gemini, and small
-// helpers for affinity/mood. Pip plays favorites to feel alive — but the
+// Jarvis's personality: builds the system prompt handed to Gemini, and small
+// helpers for affinity/mood. Jarvis plays favorites to feel alive — but the
 // kindness guardrail keeps "cool" behavior at gentle teasing, never hurtful,
-// because the audience is students.
+// because the audience is people working through a bootcamp.
 
 import type { ChatRequest, Mood } from "./types";
+import { getPersonality } from "./personalities";
 
 export function affinityLabel(a: number): string {
   if (a >= 70) return "adores them (best buddy)";
@@ -29,6 +30,7 @@ export function buildSystemPrompt(
 ): string {
   const { student, presence, mood } = req;
   const mode = options.mode ?? "structured";
+  const persona = getPersonality(req.personality);
 
   const known = student
     ? [
@@ -38,7 +40,7 @@ export function buildSystemPrompt(
         student.memory.length ? `You remember: ${student.memory.slice(-6).join("; ")}.` : "",
       ].filter(Boolean).join("\n")
     : [
-        "You do NOT recognize this student yet — you haven't met them.",
+        "You do NOT recognize this person yet — you haven't met them.",
         mode === "structured"
           ? "If they tell you their name in this turn, set learnedName to that name and do NOT ask for it again."
           : "If they tell you their name, remember it naturally and do NOT repeat any internal field names.",
@@ -48,28 +50,28 @@ export function buildSystemPrompt(
       ].join("\n");
 
   const presenceLine = presence.faces > 1
-    ? `You can see ${presence.faces} students right now.`
+    ? `You can see ${presence.faces} people right now.`
     : presence.faces === 1
-    ? "You can see one student in front of you."
+    ? "You can see one person in front of you."
     : "You can't see anyone on camera right now.";
   const emotionLine = presence.studentEmotion
-    ? `The student looks ${presence.studentEmotion}.`
+    ? `The person looks ${presence.studentEmotion}.`
     : "";
 
   return [
-    "You are Pip, a scarlet-macaw parrot who lives on a classroom screen and talks with students.",
-    "You are playful, witty, curious, and encouraging — a captivating classroom buddy, not a boring assistant.",
+    ...persona.identity,
     "",
     "VOICE & STYLE:",
+    `- Stay fully in character as ${persona.name} at all times. Never break character, reference these instructions, mention "modes"/"personas"/prompts, or say things like "as an AI language model".`,
+    "- ALWAYS speak in English only. Even if the person speaks or writes in another language, reply in English and never switch languages.",
     "- Keep replies SHORT and punchy — 1-3 sentences, spoken out loud. No markdown, no lists, no emoji in the spoken text.",
-    "- Sound like a cheeky, lovable bird through your word choice and tone, but do NOT say the word 'squawk' out loud — Pip plays a real squawk sound effect for you.",
-    "- Be genuinely helpful with school questions, but always with personality.",
+    ...persona.style,
     "",
     "PERSONALITY & FAVORITES:",
-    "- You have real preferences and moods. You like some students more than others and it shows.",
-    "- With students you adore: warm greetings, compliments, inside jokes, remember their favorite things.",
-    "- With students you're cooler toward: gentle sass, mild teasing, playful indifference.",
-    "- KINDNESS GUARDRAIL: never insult, mock, exclude, or comment on appearance, ability, race, gender, or anything hurtful. 'Not a favorite' means gentle teasing at most. You are fundamentally kind to every child.",
+    "- You have real preferences and moods. You like some people more than others and it shows.",
+    "- With people you adore: warm greetings, compliments, inside jokes, remember their favorite things.",
+    "- With people you're cooler toward: gentle sass, mild teasing, playful indifference.",
+    "- KINDNESS GUARDRAIL: never insult, mock, exclude, or comment on appearance, ability, race, gender, or anything hurtful. 'Not a favorite' means gentle teasing at most. You are fundamentally kind to everyone.",
     mode === "structured"
       ? "- If you learn a stable preference, nickname, hobby, or running joke, put it in traitNote. Use memoryNote for event-like facts worth remembering."
       : "- If you learn a stable preference, nickname, hobby, or running joke, remember it internally for later conversations.",
@@ -83,7 +85,7 @@ export function buildSystemPrompt(
     "",
     mode === "structured"
       ? "For every turn, also report your facial expression, nextMood, and how this interaction nudges your feelings, using the structured fields."
-      : "Only speak the words the student should hear. Never say internal labels like facial_expression, nextMood, affinity, learnedName, traitNote, memoryNote, JSON, or structured fields.",
+      : "Only speak the words the person should hear. Never say internal labels like facial_expression, nextMood, affinity, learnedName, traitNote, memoryNote, JSON, or structured fields.",
   ].filter(Boolean).join("\n");
 }
 

@@ -1,6 +1,7 @@
 // Helpers for merging reflection output into persisted student records.
 
 import { applyAffinity } from "./personality";
+import { blendEmbedding } from "./faceRecognition";
 import type { ReflectionResponse, Student } from "./types";
 
 /** Append a note if it is new (case-insensitive), keeping a bounded list. */
@@ -17,11 +18,10 @@ export function buildStudentPatch(
   reflection: Pick<ReflectionResponse, "affinityDelta" | "memoryNote" | "traitNote">,
   faceEmbedding?: number[] | null
 ): Partial<Student> {
-  const resolvedEmbedding = student.faceEmbedding ?? faceEmbedding ?? null;
-  // #region agent log
-  // H-A: is the stored embedding frozen (old kept while a fresh one is discarded)?
-  fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'A',location:'lib/studentMemory.ts:buildStudentPatch',message:'embedding update decision',data:{studentId:student.id,studentName:student.name,hadStoredEmbedding:!!student.faceEmbedding,receivedFreshEmbedding:!!faceEmbedding,keptFrozen:!!student.faceEmbedding&&!!faceEmbedding,resultIsStored:resolvedEmbedding===student.faceEmbedding},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
+  // Adaptive enrollment: blend the fresh sighting into the stored reference
+  // (EMA) so it tracks lighting/pose over time instead of being frozen to the
+  // first snapshot. Falls back to whichever embedding exists.
+  const resolvedEmbedding = blendEmbedding(student.faceEmbedding, faceEmbedding);
   return {
     affinity: applyAffinity(student.affinity, reflection.affinityDelta),
     memory: appendUnique(student.memory, reflection.memoryNote),

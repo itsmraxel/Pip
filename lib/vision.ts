@@ -1,11 +1,13 @@
 // Vision: wraps @vladmandic/human to detect faces from the webcam, produce a
 // face embedding (to recognize students on sight), read the student's emotion,
-// and locate the nearest face (so Pip can look toward whoever's talking).
+// and locate the nearest face (so Jarvis can look toward whoever's talking).
 //
 // Human is dynamically imported (it's large + browser-only) and typed loosely
 // on purpose — we only touch a small, stable slice of its result shape.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { numEnv } from "./env";
 
 export interface VisionFrame {
   faces: number;
@@ -20,6 +22,14 @@ export interface VisionFrame {
 const MODEL_BASE =
   process.env.NEXT_PUBLIC_HUMAN_MODELS ||
   "https://cdn.jsdelivr.net/gh/vladmandic/human/models/";
+
+// Quality gate for using a face's embedding in recognition. A too-small,
+// low-confidence, or strongly turned face produces an unreliable embedding —
+// we still report the face (for look-at / counting) but drop its embedding so
+// it can neither drive a match nor corrupt an enrolled reference.
+const MIN_FACE_SCORE = numEnv(process.env.NEXT_PUBLIC_FACE_MIN_SCORE, 0.4);
+const MIN_FACE_AREA = numEnv(process.env.NEXT_PUBLIC_FACE_MIN_AREA, 0.012);
+const MAX_FACE_ANGLE = numEnv(process.env.NEXT_PUBLIC_FACE_MAX_ANGLE, 0.7);
 
 export class Vision {
   private human: any = null;
@@ -122,6 +132,19 @@ function summarize(res: any, video: HTMLVideoElement): VisionFrame {
     Array.isArray(best.emotion) && best.emotion.length
       ? [...best.emotion].sort((a, b) => b.score - a.score)[0]?.emotion ?? null
       : null;
-  const embedding = Array.isArray(best.embedding) ? best.embedding : null;
+
+  const rawEmbedding = Array.isArray(best.embedding) ? best.embedding : null;
+  const score: number = best.faceScore ?? best.score ?? best.boxScore ?? 1;
+  const areaFrac = bestArea / (vw * vh);
+  const angle = best.rotation?.angle ?? {};
+  const yaw = Math.abs(angle.yaw ?? 0);
+  const pitch = Math.abs(angle.pitch ?? 0);
+  const goodQuality =
+    score >= MIN_FACE_SCORE &&
+    areaFrac >= MIN_FACE_AREA &&
+    yaw <= MAX_FACE_ANGLE &&
+    pitch <= MAX_FACE_ANGLE;
+  const embedding = goodQuality ? rawEmbedding : null;
+
   return { faces: faces.length, nearest: { x: cx, y: cy }, embedding, emotion };
 }
