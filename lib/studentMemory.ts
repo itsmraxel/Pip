@@ -1,6 +1,7 @@
 // Helpers for merging reflection output into persisted student records.
 
 import { applyAffinity } from "./personality";
+import { blendEmbedding } from "./faceRecognition";
 import type { ReflectionResponse, Student } from "./types";
 
 /** Append a note if it is new (case-insensitive), keeping a bounded list. */
@@ -17,7 +18,10 @@ export function buildStudentPatch(
   reflection: Pick<ReflectionResponse, "affinityDelta" | "memoryNote" | "traitNote">,
   faceEmbedding?: number[] | null
 ): Partial<Student> {
-  const resolvedEmbedding = student.faceEmbedding ?? faceEmbedding ?? null;
+  // Adaptive enrollment: blend the fresh sighting into the stored reference
+  // (EMA) so it tracks lighting/pose over time instead of being frozen to the
+  // first snapshot. Falls back to whichever embedding exists.
+  const resolvedEmbedding = blendEmbedding(student.faceEmbedding, faceEmbedding);
   return {
     affinity: applyAffinity(student.affinity, reflection.affinityDelta),
     memory: appendUnique(student.memory, reflection.memoryNote),

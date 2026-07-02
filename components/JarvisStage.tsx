@@ -17,6 +17,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Jarvis, type JarvisHandle } from "@/components/Jarvis";
 import { Vision, type VisionFrame } from "@/lib/vision";
 import { matchByFace, matchByName } from "@/lib/identity";
+import { averageEmbedding, resolveFace, FACE_WINDOW_MS, FACE_WINDOW_N } from "@/lib/faceRecognition";
 import { buildSystemPrompt } from "@/lib/personality";
 import { PERSONALITIES, DEFAULT_PERSONALITY_ID, getPersonality, type PersonalityId } from "@/lib/personalities";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
@@ -93,6 +94,9 @@ export function JarvisStage() {
   const lastNoFaceLookRef = useRef(0);
   const emptyRoomNapRef = useRef(false);
 
+  // Rolling window of recent good-quality embeddings, averaged before matching
+  // so identity decisions are smoothed instead of made per noisy frame.
+  const embeddingWindowRef = useRef<{ emb: number[]; t: number }[]>([]);
   const historyRef = useRef<ChatTurn[]>([]);
   const lastEmbeddingRef = useRef<number[] | null>(null);
   const currentEmotionRef = useRef<string | null>(null);
@@ -477,12 +481,25 @@ export function JarvisStage() {
     setFaces(f.faces);
     facesRef.current = f.faces;
     roomStateRef.current = roomStateFromFaces(f.faces);
-    lastEmbeddingRef.current = f.embedding ?? null;
     currentEmotionRef.current = f.emotion ?? null;
+
+    // Smooth recent (quality-gated) embeddings into one averaged signal so a
+    // single noisy frame can't flip identity.
+    const nowTs = Date.now();
+    if (f.embedding) {
+      embeddingWindowRef.current.push({ emb: f.embedding, t: nowTs });
+    }
+    embeddingWindowRef.current = embeddingWindowRef.current
+      .filter((e) => nowTs - e.t <= FACE_WINDOW_MS)
+      .slice(-FACE_WINDOW_N);
+    const smoothed = averageEmbedding(embeddingWindowRef.current.map((e) => e.emb));
+    lastEmbeddingRef.current = smoothed ?? f.embedding ?? null;
+
     if (f.faces === 0) {
       noFaceSinceRef.current ??= Date.now();
       currentStudentIdRef.current = null;
       currentNameRef.current = null;
+      embeddingWindowRef.current = [];
     } else {
       noFaceSinceRef.current = null;
       emptyRoomNapRef.current = false;
@@ -490,8 +507,10 @@ export function JarvisStage() {
     const jarvis = jarvisRef.current;
     if (!jarvis) return;
 
-    const faceMatch = matchByFace(f.embedding, studentsRef.current);
-    if (faceMatch) currentStudentIdRef.current = faceMatch.student.id;
+    // Resolve identity with a confidence margin + hysteresis (keeps the current
+    // person unless another clearly wins), which stops frame-to-frame flicker.
+    const resolution = resolveFace(lastEmbeddingRef.current, studentsRef.current, currentStudentIdRef.current);
+    if (resolution.student) currentStudentIdRef.current = resolution.student.id;
 
     if (f.nearest) {
       const { width } = jarvis.stageSize();
@@ -509,7 +528,7 @@ export function JarvisStage() {
     }
 
     if (f.faces > lastFaceCountRef.current) {
-      const match = matchByFace(f.embedding, studentsRef.current);
+      const match = matchByFace(lastEmbeddingRef.current, studentsRef.current);
       const now = Date.now();
       if (match && now - (lastGreetRef.current[match.student.id] ?? 0) > 30_000) {
         lastGreetRef.current[match.student.id] = now;

@@ -4,21 +4,9 @@
 // rather than guessing wrong.
 
 import type { Student } from "./types";
+import { resolveFace } from "./faceRecognition";
 
-const FACE_THRESHOLD = Number(process.env.NEXT_PUBLIC_FACE_THRESHOLD || 0.5);
 const VOICE_THRESHOLD = Number(process.env.NEXT_PUBLIC_VOICE_THRESHOLD || 0.5);
-
-function cosine(a: number[], b: number[]): number {
-  if (!a?.length || a.length !== b?.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
 
 export interface Match {
   student: Student | null;
@@ -26,21 +14,14 @@ export interface Match {
   via: "face" | "voice" | "face+voice" | "none";
 }
 
-
-/** Best face match among students with a stored embedding. */
+/**
+ * Best face match among students with a stored embedding, requiring both a
+ * confidence threshold and a margin over the runner-up (via resolveFace) so
+ * near-ties return null rather than a coin-flip guess.
+ */
 export function matchByFace(embedding: number[] | null, students: Student[]): { student: Student; score: number } | null {
-  if (!embedding) return null;
-  let best: Student | null = null;
-  let bestScore = 0;
-  for (const s of students) {
-    if (!s.faceEmbedding) continue;
-    const score = cosine(embedding, s.faceEmbedding);
-    if (score > bestScore) {
-      bestScore = score;
-      best = s;
-    }
-  }
-  return best && bestScore >= FACE_THRESHOLD ? { student: best, score: bestScore } : null;
+  const r = resolveFace(embedding, students, null);
+  return r.student ? { student: r.student, score: r.score } : null;
 }
 
 /**
