@@ -48,6 +48,10 @@ const LIVE_AGENT_THINK_MODEL =
 // each personality supplies its own Aura-2 voice via getPersonality().
 const LIVE_AGENT_SPEAK_MODEL_OVERRIDE =
   process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_SPEAK_MODEL || null;
+
+// Cap the visible transcript so long sessions don't pile up base64 webcam
+// photos in React state (each user message can carry one).
+const MAX_CHAT_MESSAGES = 50;
 type LiveAgentThinkProvider = "google" | "open_ai" | "anthropic";
 
 function getLiveAgentThinkProvider(): LiveAgentThinkProvider {
@@ -210,7 +214,7 @@ export function JarvisStage() {
 
       const photo = capturePersonPhoto();
       historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
-      setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text, photo }]);
+      setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user" as const, text, photo }].slice(-MAX_CHAT_MESSAGES));
       setThinking(true);
       jarvisRef.current?.setThinking(true);
       lastInteractionAtRef.current = Date.now();
@@ -235,10 +239,12 @@ export function JarvisStage() {
         const reply = (await res.json()) as ChatResponse;
 
         historyRef.current = [...historyRef.current, { role: "assistant" as const, text: reply.reply }].slice(-12);
-        setMessages((prev) => [
-          ...prev,
-          { id: `m${msgIdRef.current++}`, role: "assistant", text: reply.reply, emoji: getPersonality(personalityRef.current).emoji },
-        ]);
+        setMessages((prev) =>
+          [
+            ...prev,
+            { id: `m${msgIdRef.current++}`, role: "assistant" as const, text: reply.reply, emoji: getPersonality(personalityRef.current).emoji },
+          ].slice(-MAX_CHAT_MESSAGES)
+        );
         moodRef.current = reply.nextMood;
         jarvisRef.current?.setMood(reply.nextMood);
         jarvisRef.current?.setBubble(reply.reply);
@@ -722,17 +728,19 @@ export function JarvisStage() {
           pendingUserTextRef.current = text;
           historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
           const photo = capturePersonPhoto();
-          setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text, photo }]);
+          setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user" as const, text, photo }].slice(-MAX_CHAT_MESSAGES));
           setCaption(`You: “${text}”`);
           lastInteractionAtRef.current = Date.now();
           return;
         }
 
         historyRef.current = [...historyRef.current, { role: "assistant" as const, text }].slice(-12);
-        setMessages((prev) => [
-          ...prev,
-          { id: `m${msgIdRef.current++}`, role: "assistant", text, emoji: getPersonality(personalityRef.current).emoji },
-        ]);
+        setMessages((prev) =>
+          [
+            ...prev,
+            { id: `m${msgIdRef.current++}`, role: "assistant" as const, text, emoji: getPersonality(personalityRef.current).emoji },
+          ].slice(-MAX_CHAT_MESSAGES)
+        );
         pendingAssistantTextRef.current = text;
         if (pendingUserTextRef.current) {
           pendingTurnRef.current = {
