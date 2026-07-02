@@ -515,6 +515,20 @@ export function PipStage() {
     setCaption("Connecting Pip's live voice…");
 
     try {
+      const tokenRes = await fetch("/api/realtime-token", { method: "POST" });
+      if (!tokenRes.ok) {
+        const error = (await tokenRes.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(
+          `Realtime token ${tokenRes.status}${error?.message ? `: ${error.message}` : ""}`
+        );
+      }
+      const tokenData = (await tokenRes.json()) as { value?: string; model?: string };
+      if (!tokenData.value) throw new Error("Realtime token missing");
+      const realtimeModel =
+        typeof tokenData.model === "string" && tokenData.model.trim()
+          ? tokenData.model.trim()
+          : LIVE_REALTIME_MODEL;
+
       const livePrompt = buildLiveAgentPrompt();
 
       const agent = new RealtimeAgent({
@@ -526,7 +540,7 @@ export function PipStage() {
       // OpenAI Realtime speech-to-speech: the WebRTC transport captures the mic
       // and plays Pip's audio automatically, so we only wire up UI/reflection.
       const session = new RealtimeSession(agent, {
-        model: LIVE_REALTIME_MODEL,
+        model: realtimeModel,
         config: {
           outputModalities: ["audio"],
           audio: {
@@ -673,19 +687,8 @@ export function PipStage() {
       });
 
       await session.connect({
-        apiKey: async () => {
-          const res = await fetch("/api/realtime-token", { method: "POST" });
-          if (!res.ok) {
-            const error = (await res.json().catch(() => null)) as { message?: string } | null;
-            throw new Error(
-              `Realtime token ${res.status}${error?.message ? `: ${error.message}` : ""}`
-            );
-          }
-          const data = (await res.json()) as { value?: string };
-          if (!data.value) throw new Error("Realtime token missing");
-          return data.value;
-        },
-        model: LIVE_REALTIME_MODEL,
+        apiKey: tokenData.value,
+        model: realtimeModel,
       });
 
       setVoiceState("live");

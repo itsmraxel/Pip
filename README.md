@@ -34,7 +34,8 @@ ephemeral token from `/api/realtime-token` for the live voice loop, and the serv
 Optional model overrides: `NEXT_PUBLIC_OPENAI_REALTIME_MODEL` / `OPENAI_REALTIME_MODEL`
 (default `gpt-realtime`), `NEXT_PUBLIC_OPENAI_REALTIME_VOICE` (default `coral`), `PIP_MODEL`
 (reflection/chat, default `gpt-4o-mini`), `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`,
-`OPENAI_STT_MODEL`, and `OPENAI_REALTIME_TOKEN_TTL_SECONDS`.
+`OPENAI_STT_MODEL`, `OPENAI_REALTIME_TOKEN_TTL_SECONDS`, and optional
+`OPENAI_REALTIME_FALLBACK_MODELS` (comma-separated).
 
 Without the OpenAI key the app still runs with friendly fallbacks so you can see Pip move.
 
