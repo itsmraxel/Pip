@@ -5,6 +5,7 @@ import { google } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
+import { getPersonality } from "@/lib/personalities";
 import { reflectionResponseSchema } from "@/lib/jarvisSchema";
 import type { ChatRequest, ReflectionRequest, ReflectionResponse } from "@/lib/types";
 
@@ -53,9 +54,10 @@ export async function POST(req: Request) {
     history: body.history ?? [],
   };
 
+  const personaName = getPersonality(body.personality).name;
   const history = (body.history ?? [])
     .slice(-8)
-    .map((t) => `${t.role === "user" ? "Person" : "Jarvis"}: ${t.text}`)
+    .map((t) => `${t.role === "user" ? "Person" : personaName}: ${t.text}`)
     .join("\n");
 
   try {
@@ -72,18 +74,18 @@ export async function POST(req: Request) {
         buildSystemPrompt(chatContext),
         "",
         "REFLECTION MODE:",
-        "- Jarvis already spoke aloud. Do NOT write a new reply to the student.",
-        "- Analyze the exchange that just happened and report Jarvis's updated internal state.",
-        "- Set learnedName whenever the student states their own name (e.g. \"I'm Sam\", \"my name is Sam\"), EVEN IF the recognized name in context is different — a different spoken name means this is a different person.",
-        "- Do not invent a name; only set learnedName from a name the student actually said.",
+        `- ${personaName} already spoke aloud. Do NOT write a new reply to the person.`,
+        `- Analyze the exchange that just happened and report ${personaName}'s updated internal state.`,
+        "- Set learnedName whenever the person states their own name (e.g. \"I'm Sam\", \"my name is Sam\"), EVEN IF the recognized name in context is different — a different spoken name means this is a different person.",
+        "- Do not invent a name; only set learnedName from a name the person actually said.",
         "- Only set memoryNote or traitNote for genuinely new, stable facts.",
-        "- proactiveCue is optional: a tiny spontaneous line Jarvis might say if the room goes quiet.",
+        `- proactiveCue is optional: a tiny spontaneous line ${personaName} might say if the room goes quiet.`,
       ].join("\n"),
       prompt: [
         history ? `Recent conversation:\n${history}\n` : "",
-        `The student just said: "${body.userText}"`,
-        `Jarvis just replied aloud: "${body.assistantText}"`,
-        "Reflect on this exchange as Jarvis.",
+        `The person just said: "${body.userText}"`,
+        `${personaName} just replied aloud: "${body.assistantText}"`,
+        `Reflect on this exchange as ${personaName}.`,
       ]
         .filter(Boolean)
         .join("\n"),

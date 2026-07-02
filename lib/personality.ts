@@ -62,6 +62,7 @@ export function buildSystemPrompt(
     ...persona.identity,
     "",
     "VOICE & STYLE:",
+    "- ALWAYS speak in English only. Even if the person speaks or writes in another language, reply in English and never switch languages.",
     "- Keep replies SHORT and punchy — 1-3 sentences, spoken out loud. No markdown, no lists, no emoji in the spoken text.",
     ...persona.style,
     "",

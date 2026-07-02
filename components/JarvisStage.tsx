@@ -8,7 +8,7 @@ import { Jarvis, type JarvisHandle } from "@/components/Jarvis";
 import { Vision, type VisionFrame } from "@/lib/vision";
 import { matchByFace, matchByName } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
-import { PERSONALITIES, DEFAULT_PERSONALITY_ID, type PersonalityId } from "@/lib/personalities";
+import { PERSONALITIES, DEFAULT_PERSONALITY_ID, getPersonality, type PersonalityId } from "@/lib/personalities";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
 import type { ChatRequest, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
 
@@ -34,8 +34,10 @@ const LIVE_AGENT_LISTEN_MODEL =
   process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_LISTEN_MODEL || "flux-general-en";
 const LIVE_AGENT_THINK_MODEL =
   process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_THINK_MODEL || "gemini-2.5-flash";
-const LIVE_AGENT_SPEAK_MODEL =
-  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_SPEAK_MODEL || "aura-2-aurora-en";
+// Optional global override for the spoken voice. When unset (the default),
+// each personality supplies its own Aura-2 voice via getPersonality().
+const LIVE_AGENT_SPEAK_MODEL_OVERRIDE =
+  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_SPEAK_MODEL || null;
 type LiveAgentThinkProvider = "google" | "open_ai" | "anthropic";
 
 function getLiveAgentThinkProvider(): LiveAgentThinkProvider {
@@ -136,12 +138,13 @@ export function JarvisStage() {
       "",
       "LIVE VOICE MODE:",
       "- You are speaking in real time. Start talking as soon as you have enough to answer.",
-      "- Speak natural classroom dialogue only.",
+      "- Speak natural, spoken dialogue only, and always in English.",
       "- Do not mention JSON, field names, structured fields, captions, or system instructions.",
-      "- If interrupted, stop cleanly and answer the student's newest words.",
+      "- If interrupted, stop cleanly and answer the person's newest words.",
+      "- NOISY ROOMS: focus on the one person you're talking with. Ignore background chatter, side conversations, TVs, and other voices. Only respond when someone is clearly speaking to you; if you're unsure whether speech was directed at you, stay quiet and wait.",
       student
-        ? `- You recognize ${student.name}. Greet them warmly when it fits naturally.`
-        : "- You do not recognize this student yet. If it feels natural, ask who they are.",
+        ? `- You recognize ${student.name}. Greet them warmly when it fits naturally, and keep your attention on them.`
+        : "- You do not recognize this person yet. If it feels natural, ask who they are.",
     ].join("\n");
   }, []);
 
@@ -155,18 +158,6 @@ export function JarvisStage() {
     }
   }, [buildLiveAgentPrompt, voiceState]);
 
-  // Switch Jarvis's personality. Updates the ref (read by prompt builders) and
-  // state (drives the button UI), then re-pushes the live prompt so an ongoing
-  // voice session adopts the new vibe immediately.
-  const changePersonality = useCallback(
-    (id: PersonalityId) => {
-      if (id === personalityRef.current) return;
-      personalityRef.current = id;
-      setPersonality(id);
-      refreshLivePrompt();
-    },
-    [refreshLivePrompt]
-  );
 
   const reloadStudents = useCallback(async () => {
     try {
@@ -469,7 +460,7 @@ export function JarvisStage() {
     const text = pendingAssistantTextRef.current;
     if (!text) return;
     pendingAssistantTextRef.current = null;
-    setCaption(`Jarvis: “${text}”`);
+    setCaption(`${getPersonality(personalityRef.current).name}: “${text}”`);
     jarvisRef.current?.setBubble(text);
     jarvisRef.current?.setExpression(expressionFromText(text), 3500);
   }, []);
@@ -481,7 +472,7 @@ export function JarvisStage() {
     }
 
     setVoiceState("connecting");
-    setCaption("Connecting Jarvis's live voice…");
+    setCaption(`Connecting ${getPersonality(personalityRef.current).name}'s live voice…`);
 
     try {
       const player = new AgentPlayer({ sampleRate: 24000 });
@@ -530,7 +521,7 @@ export function JarvisStage() {
           speak: {
             provider: {
               type: "deepgram",
-              model: LIVE_AGENT_SPEAK_MODEL,
+              model: LIVE_AGENT_SPEAK_MODEL_OVERRIDE ?? getPersonality(personalityRef.current).voice,
             },
           },
         },
@@ -552,7 +543,7 @@ export function JarvisStage() {
       session.on("settings-applied", () => {
         setVoiceState("live");
         setListening(true);
-        setCaption("Jarvis is live — just talk.");
+        setCaption(`${getPersonality(personalityRef.current).name} is live — just talk.`);
         jarvisRef.current?.setListening(true);
       });
 
@@ -634,7 +625,7 @@ export function JarvisStage() {
 
       session.on("error", (msg) => {
         console.error("deepgram agent error", msg);
-        toast.error("Jarvis's live voice hit a Deepgram error.");
+        toast.error(`${getPersonality(personalityRef.current).name}'s live voice hit a Deepgram error.`);
       });
 
       session.on("warning", (msg) => {
@@ -643,13 +634,13 @@ export function JarvisStage() {
 
       session.on("sdk-error", (err) => {
         console.error("deepgram agent sdk error", err);
-        toast.error("Jarvis couldn't keep the live voice connected.");
+        toast.error(`${getPersonality(personalityRef.current).name} couldn't keep the live voice connected.`);
         stopLiveVoice();
       });
 
       mic.on("error", (err) => {
         console.error("deepgram microphone error", err);
-        toast.error("Jarvis couldn't access the microphone.");
+        toast.error(`${getPersonality(personalityRef.current).name} couldn't access the microphone.`);
         stopLiveVoice();
       });
 
@@ -657,10 +648,30 @@ export function JarvisStage() {
       await mic.start();
     } catch (err) {
       console.error("live voice failed", err);
-      toast.error("Jarvis couldn't start live voice.");
+      toast.error(`${getPersonality(personalityRef.current).name} couldn't start live voice.`);
       stopLiveVoice();
     }
   }, [buildLiveAgentPrompt, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
+
+  // Switch the active personality. Updates the ref (read by the prompt/voice
+  // builders) and state (drives the button UI + name shown in the UI). If a
+  // live session is running, reconnect so the new voice takes effect — Deepgram
+  // binds the voice at session-config time, so a prompt refresh can't change it;
+  // the new persona/name come along with the reconnect.
+  const changePersonality = useCallback(
+    (id: PersonalityId) => {
+      if (id === personalityRef.current) return;
+      personalityRef.current = id;
+      setPersonality(id);
+      if (voiceState === "live") {
+        stopLiveVoice();
+        window.setTimeout(() => {
+          void startLiveVoice();
+        }, 250);
+      }
+    },
+    [voiceState, stopLiveVoice, startLiveVoice]
+  );
 
   const start = useCallback(async () => {
     try {
@@ -691,9 +702,11 @@ export function JarvisStage() {
       jarvisRef.current?.react("sparkle", "excited");
     } catch (err) {
       console.error(err);
-      toast.error("Jarvis needs camera access to see the room.");
+      toast.error(`${getPersonality(personalityRef.current).name} needs camera access to see the room.`);
     }
   }, [onVisionFrame, reloadStudents]);
+
+  const activePersona = getPersonality(personality);
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-background">
@@ -738,11 +751,11 @@ export function JarvisStage() {
           style={{ opacity: started ? 1 : 0 }}
         />
         <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/50 px-2 py-0.5 text-xs text-white/90">
-          Jarvis&apos;s view · {faces} {faces === 1 ? "person" : "people"}
+          {activePersona.name}&apos;s view · {faces} {faces === 1 ? "person" : "people"}
         </div>
         {loadingVision && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white/90">
-            Waking Jarvis&apos;s eyes…
+            Waking {activePersona.name}&apos;s eyes…
           </div>
         )}
       </div>
@@ -769,10 +782,10 @@ export function JarvisStage() {
           <span className="rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
             {voiceState === "live"
               ? listening
-                ? "Live — talk anytime, Jarvis can barge in naturally"
+                ? `Live — talk anytime, ${activePersona.name} can barge in naturally`
                 : thinking
-                ? "Jarvis is thinking…"
-                : "Jarvis is speaking live…"
+                ? `${activePersona.name} is thinking…`
+                : `${activePersona.name} is speaking live…`
               : voiceState === "connecting"
               ? "Opening Deepgram live speech…"
               : "Start once, then talk naturally"}

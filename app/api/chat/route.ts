@@ -6,6 +6,7 @@ import { google } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory, persistReflectionMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
+import { getPersonality } from "@/lib/personalities";
 import { chatResponseSchema } from "@/lib/jarvisSchema";
 import type { ChatRequest, ChatResponse } from "@/lib/types";
 
@@ -45,9 +46,10 @@ export async function POST(req: Request) {
     student: enrichedStudent,
   };
 
+  const personaName = getPersonality(body.personality).name;
   const history = (body.history ?? [])
     .slice(-8)
-    .map((t) => `${t.role === "user" ? "Person" : "Jarvis"}: ${t.text}`)
+    .map((t) => `${t.role === "user" ? "Person" : personaName}: ${t.text}`)
     .join("\n");
 
   try {
@@ -58,7 +60,7 @@ export async function POST(req: Request) {
       prompt: [
         history ? `Recent conversation:\n${history}\n` : "",
         `The person just said: "${body.text}"`,
-        "Reply as Jarvis.",
+        `Reply as ${personaName}.`,
       ].filter(Boolean).join("\n"),
     });
 
