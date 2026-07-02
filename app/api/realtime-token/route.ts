@@ -6,7 +6,18 @@ import OpenAI from "openai";
 
 export const maxDuration = 10;
 
-const REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime";
+const REALTIME_MODEL =
+  process.env.OPENAI_REALTIME_MODEL ||
+  process.env.NEXT_PUBLIC_OPENAI_REALTIME_MODEL ||
+  "gpt-realtime";
+const MIN_TOKEN_TTL_SECONDS = 10;
+const MAX_TOKEN_TTL_SECONDS = 7200;
+
+function realtimeTokenTtlSeconds(): number {
+  const raw = Number(process.env.OPENAI_REALTIME_TOKEN_TTL_SECONDS ?? 600);
+  if (!Number.isFinite(raw)) return 600;
+  return Math.min(MAX_TOKEN_TTL_SECONDS, Math.max(MIN_TOKEN_TTL_SECONDS, Math.trunc(raw)));
+}
 
 export async function POST() {
   const key = process.env.OPENAI_API_KEY;
@@ -15,7 +26,7 @@ export async function POST() {
   }
 
   try {
-    const ttl = Number(process.env.OPENAI_REALTIME_TOKEN_TTL_SECONDS ?? 600);
+    const ttl = realtimeTokenTtlSeconds();
     const openai = new OpenAI({ apiKey: key });
     const secret = await openai.realtime.clientSecrets.create({
       expires_after: { anchor: "created_at", seconds: ttl },

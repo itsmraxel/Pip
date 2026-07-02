@@ -23,6 +23,7 @@ export async function POST(req: Request) {
       input: text,
       response_format: "mp3",
     });
+    if (!speech.body) return new Response("No audio", { status: 502 });
     return new Response(speech.body, {
       headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
     });
