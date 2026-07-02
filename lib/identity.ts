@@ -26,6 +26,28 @@ export interface Match {
   via: "face" | "voice" | "face+voice" | "none";
 }
 
+// #region agent log
+/** DEBUG: best raw cosine (ignoring threshold) for diagnosing over-matching. */
+export function debugBestFaceScore(
+  embedding: number[] | null,
+  students: Student[]
+): { name: string | null; id: string | null; score: number; threshold: number; enrolled: number } {
+  const enrolled = students.filter((s) => s.faceEmbedding).length;
+  if (!embedding) return { name: null, id: null, score: 0, threshold: FACE_THRESHOLD, enrolled };
+  let best: Student | null = null;
+  let bestScore = 0;
+  for (const s of students) {
+    if (!s.faceEmbedding) continue;
+    const score = cosine(embedding, s.faceEmbedding);
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  return { name: best?.name ?? null, id: best?.id ?? null, score: bestScore, threshold: FACE_THRESHOLD, enrolled };
+}
+// #endregion
+
 /** Best face match among students with a stored embedding. */
 export function matchByFace(embedding: number[] | null, students: Student[]): { student: Student; score: number } | null {
   if (!embedding) return null;

@@ -1,20 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AgentMicrophone, AgentPlayer, AgentSession, type AgentSessionConfig } from "@deepgram/agents";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { SpeechInput } from "@/components/ai-elements/speech-input";
 import { Pip, type PipHandle } from "@/components/Pip";
 import { Vision, type VisionFrame } from "@/lib/vision";
-import { matchByFace } from "@/lib/identity";
-import { applyAffinity } from "@/lib/personality";
+import { matchByFace, debugBestFaceScore } from "@/lib/identity";
+import { buildSystemPrompt } from "@/lib/personality";
 import { sounds } from "@/lib/sounds";
-import type { ChatRequest, ChatResponse, ChatTurn, Expression, Mood, Student } from "@/lib/types";
+import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
+import type { ChatRequest, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
 
-// Flip so Pip lines up with the mirrored camera box the teacher sees.
 const MIRROR = true;
+const PROACTIVE_GAP_MS = 60_000;
+const SILENCE_PROMPT_MS = 45_000;
+const MULTI_FACE_GAP_MS = 90_000;
+const NO_FACE_LOOK_DELAY_MS = 10_000;
+const NO_FACE_NAP_DELAY_MS = 90_000;
+const NO_FACE_LOOK_GAP_MS = 18_000;
 
-// Map a detected face emotion to one of Pip's expressions (mirrors the room).
 const EMOTION_MAP: Record<string, Expression> = {
   happy: "happy",
   surprise: "surprised",
@@ -25,16 +30,36 @@ const EMOTION_MAP: Record<string, Expression> = {
   neutral: "curious",
 };
 
-function appendUnique(list: string[], value: string | null, limit: number) {
-  const next = value?.trim();
-  if (!next || list.some((item) => item.toLowerCase() === next.toLowerCase())) return list;
-  return [...list, next].slice(-limit);
+const LIVE_AGENT_LISTEN_MODEL =
+  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_LISTEN_MODEL || "flux-general-en";
+const LIVE_AGENT_THINK_MODEL =
+  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_THINK_MODEL || "gemini-2.5-flash";
+const LIVE_AGENT_SPEAK_MODEL =
+  process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_SPEAK_MODEL || "aura-2-aurora-en";
+type LiveAgentThinkProvider = "google" | "open_ai" | "anthropic";
+
+function getLiveAgentThinkProvider(): LiveAgentThinkProvider {
+  const provider = process.env.NEXT_PUBLIC_DEEPGRAM_AGENT_THINK_PROVIDER;
+  if (provider === "open_ai" || provider === "anthropic" || provider === "google") {
+    return provider;
+  }
+  return "google";
 }
 
-function cleanLearnedName(value: string | null) {
-  const name = value?.trim().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
-  if (!name || name.length > 40) return null;
-  return name;
+const LIVE_AGENT_THINK_PROVIDER = getLiveAgentThinkProvider();
+
+function expressionFromText(text: string): Expression {
+  const lower = text.toLowerCase();
+  if (lower.includes("?")) return "curious";
+  if (/\b(great|awesome|brilliant|nice|yay|hooray|love)\b/.test(lower)) return "happy";
+  if (/\b(oops|whoa|wow|surprise)\b/.test(lower)) return "surprised";
+  return "excited";
+}
+
+function roomStateFromFaces(faces: number): RoomState {
+  if (faces === 0) return "empty";
+  if (faces > 1) return "multi";
+  return "single";
 }
 
 export function PipStage() {
@@ -47,15 +72,33 @@ export function PipStage() {
   const lastFaceCountRef = useRef(0);
   const lastGreetRef = useRef<Record<string, number>>({});
   const lastEmotionRef = useRef<{ label: string | null; at: number }>({ label: null, at: 0 });
+  const lastMultiFaceAckRef = useRef(0);
+  const noFaceSinceRef = useRef<number | null>(null);
+  const lastNoFaceLookRef = useRef(0);
+  const emptyRoomNapRef = useRef(false);
 
-  // Conversation state (kept in refs so the async loop always sees the latest).
   const historyRef = useRef<ChatTurn[]>([]);
   const lastEmbeddingRef = useRef<number[] | null>(null);
   const currentEmotionRef = useRef<string | null>(null);
   const facesRef = useRef(0);
   const moodRef = useRef<Mood>("neutral");
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const busyRef = useRef(false);
+  const roomStateRef = useRef<RoomState>("empty");
+  const currentStudentIdRef = useRef<string | null>(null);
+  // #region agent log
+  const lastVisionLogRef = useRef(0);
+  // #endregion
+  const lastInteractionAtRef = useRef(0);
+  const lastProactiveAtRef = useRef(0);
+  const proactiveCueRef = useRef<string | null>(null);
+  const pendingTurnRef = useRef<{ userText: string; assistantText: string } | null>(null);
+  const reflectingRef = useRef(false);
+  const wasSpeakingRef = useRef(false);
+
+  const agentSessionRef = useRef<AgentSession | null>(null);
+  const agentMicRef = useRef<AgentMicrophone | null>(null);
+  const agentPlayerRef = useRef<AgentPlayer | null>(null);
+  const pendingAssistantTextRef = useRef<string | null>(null);
+  const pendingUserTextRef = useRef<string | null>(null);
 
   const [started, setStarted] = useState(false);
   const [loadingVision, setLoadingVision] = useState(false);
@@ -63,30 +106,233 @@ export function PipStage() {
   const [thinking, setThinking] = useState(false);
   const [listening, setListening] = useState(false);
   const [caption, setCaption] = useState("");
+  const [voiceState, setVoiceState] = useState<"idle" | "connecting" | "live">("idle");
+
+  const buildLiveAgentPrompt = useCallback(() => {
+    const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
+    const student = faceMatch?.student ?? null;
+    if (student) currentStudentIdRef.current = student.id;
+    // #region agent log
+    {
+      const dbg = debugBestFaceScore(lastEmbeddingRef.current, studentsRef.current);
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
+    }
+    // #endregion
+
+    const payload: ChatRequest = {
+      text: "",
+      student: student
+        ? { name: student.name, affinity: student.affinity, traits: student.traits, memory: student.memory }
+        : null,
+      presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
+      mood: moodRef.current,
+      history: historyRef.current,
+    };
+
+    return [
+      buildSystemPrompt(payload, { mode: "spoken" }),
+      "",
+      "LIVE VOICE MODE:",
+      "- You are speaking in real time. Start talking as soon as you have enough to answer.",
+      "- Speak natural classroom dialogue only.",
+      "- Do not mention JSON, field names, structured fields, captions, or system instructions.",
+      "- If interrupted, stop cleanly and answer the student's newest words.",
+      student
+        ? `- You recognize ${student.name}. Greet them warmly when it fits naturally.`
+        : "- You do not recognize this student yet. If it feels natural, ask who they are.",
+    ].join("\n");
+  }, []);
+
+  const refreshLivePrompt = useCallback(() => {
+    const session = agentSessionRef.current;
+    if (!session || voiceState !== "live") return;
+    try {
+      session.updatePrompt(buildLiveAgentPrompt());
+    } catch (err) {
+      console.warn("failed to refresh live prompt", err);
+    }
+  }, [buildLiveAgentPrompt, voiceState]);
+
+  const reloadStudents = useCallback(async () => {
+    try {
+      const r = await fetch("/api/students");
+      const d = (await r.json()) as { students: Student[] };
+      studentsRef.current = d.students ?? [];
+      // #region agent log
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'C',location:'components/PipStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } catch {
+      /* keep in-memory roster */
+    }
+  }, []);
+
+  const applyReflectionAnimation = useCallback((reflection: ReflectionResponse) => {
+    moodRef.current = reflection.nextMood;
+    pipRef.current?.setMood(reflection.nextMood);
+    pipRef.current?.setExpression(reflection.emotion, 3500);
+    if (reflection.emote) {
+      pipRef.current?.react(reflection.emote, reflection.emotion);
+    }
+    proactiveCueRef.current = reflection.proactiveCue;
+  }, []);
+
+  const persistReflection = useCallback(
+    async (reflection: ReflectionResponse) => {
+      const embedding = lastEmbeddingRef.current;
+      const faceMatch = matchByFace(embedding, studentsRef.current);
+      let student = faceMatch?.student ?? null;
+      // #region agent log
+      {
+        const willCreate = Boolean(reflection.learnedName?.trim()) && !student;
+        const fallbackId = student?.id ?? currentStudentIdRef.current;
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'B',location:'components/PipStage.tsx:persistReflection',message:'persist decision',data:{learnedName:reflection.learnedName??null,faceMatchName:student?.name??null,faceMatchId:student?.id??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,branch:willCreate?'create-new':(fallbackId?'update-existing':'skip-no-id'),targetStudentId:fallbackId,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
+      }
+      // #endregion
+
+      if (reflection.learnedName?.trim() && !student) {
+        const res = await fetch("/api/students", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: reflection.learnedName.trim(),
+            faceEmbedding: embedding,
+            affinity: reflection.affinityDelta,
+            traits: reflection.traitNote ? [reflection.traitNote.trim()] : [],
+            memory: reflection.memoryNote ? [reflection.memoryNote.trim()] : [],
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { student: Student };
+          student = data.student;
+          studentsRef.current = upsertStudentRoster(studentsRef.current, student);
+          currentStudentIdRef.current = student.id;
+        }
+        return student;
+      }
+
+      const studentId = student?.id ?? currentStudentIdRef.current;
+      if (!studentId) return null;
+
+      const existing = studentsRef.current.find((s) => s.id === studentId);
+      if (!existing) return null;
+
+      const patch = buildStudentPatch(existing, reflection, embedding);
+      const res = await fetch("/api/students", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: studentId,
+          faceEmbedding: patch.faceEmbedding,
+          affinityDelta: reflection.affinityDelta,
+          memoryNote: reflection.memoryNote,
+          traitNote: reflection.traitNote,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { student: Student };
+        studentsRef.current = upsertStudentRoster(studentsRef.current, data.student);
+        currentStudentIdRef.current = data.student.id;
+        return data.student;
+      }
+      return existing;
+    },
+    []
+  );
+
+  const reflectOnTurn = useCallback(
+    async (userText: string, assistantText: string) => {
+      if (reflectingRef.current) return;
+      reflectingRef.current = true;
+      try {
+        const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
+        const student =
+          faceMatch?.student ??
+          studentsRef.current.find((knownStudent) => knownStudent.id === currentStudentIdRef.current) ??
+          null;
+
+        const res = await fetch("/api/reflection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userText,
+            assistantText,
+            student: student
+              ? {
+                  id: student.id,
+                  name: student.name,
+                  affinity: student.affinity,
+                  traits: student.traits,
+                  memory: student.memory,
+                }
+              : null,
+            faceEmbedding: lastEmbeddingRef.current,
+            presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
+            mood: moodRef.current,
+            history: historyRef.current,
+          }),
+        });
+
+        if (!res.ok) return;
+        const reflection = (await res.json()) as ReflectionResponse;
+
+        applyReflectionAnimation(reflection);
+        await persistReflection(reflection);
+        await reloadStudents();
+        refreshLivePrompt();
+        lastInteractionAtRef.current = Date.now();
+      } catch (err) {
+        console.warn("reflection failed", err);
+      } finally {
+        reflectingRef.current = false;
+        pendingTurnRef.current = null;
+      }
+    },
+    [applyReflectionAnimation, persistReflection, refreshLivePrompt, reloadStudents]
+  );
 
   useEffect(() => {
+    lastInteractionAtRef.current = Date.now();
     return () => {
       visionRef.current?.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      audioRef.current?.pause();
+      agentMicRef.current?.stop();
+      agentSessionRef.current?.disconnect();
+      agentPlayerRef.current?.dispose();
     };
   }, []);
 
   const onVisionFrame = useCallback((f: VisionFrame) => {
     setFaces(f.faces);
     facesRef.current = f.faces;
+    roomStateRef.current = roomStateFromFaces(f.faces);
     lastEmbeddingRef.current = f.embedding ?? null;
     currentEmotionRef.current = f.emotion ?? null;
+    if (f.faces === 0) {
+      noFaceSinceRef.current ??= Date.now();
+      currentStudentIdRef.current = null;
+    } else {
+      noFaceSinceRef.current = null;
+      emptyRoomNapRef.current = false;
+    }
     const pip = pipRef.current;
     if (!pip) return;
+
+    const faceMatch = matchByFace(f.embedding, studentsRef.current);
+    if (faceMatch) currentStudentIdRef.current = faceMatch.student.id;
+    // #region agent log
+    if (f.faces > 0 && Date.now() - lastVisionLogRef.current > 2500) {
+      lastVisionLogRef.current = Date.now();
+      const dbg = debugBestFaceScore(f.embedding, studentsRef.current);
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
+    }
+    // #endregion
 
     if (f.nearest) {
       const { width } = pip.stageSize();
       const nx = MIRROR ? 1 - f.nearest.x : f.nearest.x;
       pip.setFollow(nx * width);
 
-      // Mirror the person's emotion occasionally, so Pip feels aware.
       const now = Date.now();
       if (f.emotion && (f.emotion !== lastEmotionRef.current.label || now - lastEmotionRef.current.at > 4000)) {
         lastEmotionRef.current = { label: f.emotion, at: now };
@@ -97,200 +343,317 @@ export function PipStage() {
       pip.setFollow(null);
     }
 
-    // React when someone new appears; greet a recognized student by name.
     if (f.faces > lastFaceCountRef.current) {
       const match = matchByFace(f.embedding, studentsRef.current);
       const now = Date.now();
-      if (match && now - (lastGreetRef.current[match.student.id] ?? 0) > 30000) {
+      if (match && now - (lastGreetRef.current[match.student.id] ?? 0) > 30_000) {
         lastGreetRef.current[match.student.id] = now;
         pip.react("love", "happy");
         pip.setBubble(`Hi ${match.student.name}!`);
         sounds.play("greet");
-        setTimeout(() => pipRef.current?.hideBubble(), 2400);
+        window.setTimeout(() => pipRef.current?.hideBubble(), 2400);
+      } else if (!match) {
+        pip.react("sparkle", "excited");
+        pip.setBubble("Oh! Someone new!");
+        sounds.play("surprise");
+        window.setTimeout(() => pipRef.current?.hideBubble(), 2200);
       } else {
         pip.react("sparkle", "excited");
         sounds.play("surprise");
       }
+      lastInteractionAtRef.current = now;
     }
+
+    if (f.faces > 1) {
+      const now = Date.now();
+      if (now - lastMultiFaceAckRef.current > MULTI_FACE_GAP_MS) {
+        lastMultiFaceAckRef.current = now;
+        pip.react("sparkle", "curious");
+        pip.setBubble(`Wow — ${f.faces} of you!`);
+        window.setTimeout(() => pipRef.current?.hideBubble(), 2400);
+      }
+    }
+
     lastFaceCountRef.current = f.faces;
   }, []);
 
-  // Turn Pip's reply into speech via Deepgram Aura and play it, driving the
-  // talking animation. Falls back to a timed "mouth moving" if TTS is
-  // unavailable so the bubble still reads naturally.
-  const speak = useCallback(async (text: string) => {
-    const pip = pipRef.current;
-    try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'D',location:'PipStage.tsx:tts-response',message:'tts fetch returned',data:{status:res.status,ok:res.ok,contentType:res.headers.get('content-type')},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      if (!res.ok) throw new Error(`tts ${res.status}`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+  // Ambient life: silence prompts, proactive cues, mood sync.
+  useEffect(() => {
+    if (!started) return;
 
-      audioRef.current?.pause();
-      const audio = new Audio(url);
-      audioRef.current = audio;
-
-      pip?.setSpeaking(true);
-      const done = () => {
-        pip?.setSpeaking(false);
-        URL.revokeObjectURL(url);
-        window.setTimeout(() => pipRef.current?.hideBubble(), 1600);
-      };
-      audio.onended = done;
-      audio.onerror = done;
-      await audio.play();
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'D',location:'PipStage.tsx:audio-play',message:'audio.play() resolved',data:{paused:audio.paused,duration:audio.duration},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    } catch (err) {
-      console.warn("tts failed, using timed fallback", err);
-      pip?.setSpeaking(true);
-      window.setTimeout(() => {
-        pipRef.current?.setSpeaking(false);
-        pipRef.current?.hideBubble();
-      }, Math.min(7000, 1400 + text.length * 45));
-    }
-  }, []);
-
-  // The full loop: a student's utterance -> who they are -> Gemini -> Pip
-  // shows/says the reply -> remember affinity + new facts.
-  const handleUtterance = useCallback(
-    async (raw: string) => {
-      const text = raw.trim();
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A,E',location:'PipStage.tsx:handleUtterance',message:'utterance received',data:{textLen:text.length,busy:busyRef.current},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      if (!text || busyRef.current) return;
-      busyRef.current = true;
-      setThinking(true);
-      setCaption(`You: “${text}”`);
+    const tick = () => {
       const pip = pipRef.current;
+      if (!pip) return;
 
-      try {
-        pip?.setListening(false);
-        pip?.setExpression("curious", 1500);
+      const now = Date.now();
+      const idleMs = now - lastInteractionAtRef.current;
+      const facesCount = facesRef.current;
+      const voiceBusy = voiceState === "live" && (listening || thinking);
 
-        // Identify the speaker by the most recent face we saw.
-        const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
-        const student = faceMatch?.student ?? null;
+      pip.setMood(moodRef.current);
 
-        historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
-
-        const payload: ChatRequest = {
-          text,
-          student: student
-            ? { name: student.name, affinity: student.affinity, traits: student.traits, memory: student.memory }
-            : null,
-          presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
-          mood: moodRef.current,
-          history: historyRef.current.slice(0, -1),
-        };
-
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const reply = (await res.json()) as ChatResponse;
-        // #region agent log
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'C',location:'PipStage.tsx:chat-response',message:'chat reply received',data:{status:res.status,replyLen:reply?.reply?.length??0,emotion:reply?.emotion,isFallback:/brain isn't plugged|thoughts got tangled/.test(reply?.reply??''),hasStudent:!!student},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-
-        historyRef.current = [...historyRef.current, { role: "assistant" as const, text: reply.reply }].slice(-12);
-
-        pip?.setBubble(reply.reply);
-        pip?.setExpression(reply.emotion, 4000);
-        if (reply.emote) pip?.react(reply.emote, reply.emotion);
-        setCaption(`Pip: “${reply.reply}”`);
-
-        moodRef.current = reply.nextMood ?? "neutral";
-
-        // Remember: nudge affinity + store any new facts for known students.
-        if (student) {
-          const nextAffinity = applyAffinity(student.affinity, reply.affinityDelta);
-          const nextMemory = appendUnique(student.memory, reply.memoryNote, 20);
-          const nextTraits = appendUnique(student.traits, reply.traitNote, 12);
-          student.affinity = nextAffinity;
-          student.memory = nextMemory;
-          student.traits = nextTraits;
-          fetch("/api/students", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: student.id, affinity: nextAffinity, memory: nextMemory, traits: nextTraits }),
-          }).catch(() => {});
-        } else {
-          const learnedName = cleanLearnedName(reply.learnedName);
-          const faceEmbedding = lastEmbeddingRef.current;
-          if (learnedName && faceEmbedding) {
-            const newStudent: Partial<Student> & { name: string } = {
-              name: learnedName,
-              faceEmbedding,
-              affinity: applyAffinity(0, reply.affinityDelta),
-              traits: appendUnique([], reply.traitNote, 12),
-              memory: appendUnique([], reply.memoryNote, 20),
-            };
-            fetch("/api/students", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(newStudent),
-            })
-              .then(async (r) => {
-                if (!r.ok) throw new Error(`student ${r.status}`);
-                const d = (await r.json()) as { student?: Student };
-                if (d.student) {
-                  studentsRef.current = [d.student, ...studentsRef.current];
-                  lastGreetRef.current[d.student.id] = Date.now();
-                  pipRef.current?.react("love", "happy");
-                  toast.success(`Pip will remember ${d.student.name}.`);
-                }
-              })
-              .catch((err) => {
-                console.warn("student enrollment failed", err);
-                toast.error("Pip heard the name, but couldn't save the face.");
-              });
-          } else if (learnedName && !faceEmbedding) {
-            toast.message("Pip heard the name, but needs a clear face in view to remember it.");
-          }
+      if (facesCount === 0 && !voiceBusy) {
+        const emptyForMs = noFaceSinceRef.current ? now - noFaceSinceRef.current : 0;
+        if (emptyForMs > NO_FACE_LOOK_DELAY_MS && now - lastNoFaceLookRef.current > NO_FACE_LOOK_GAP_MS) {
+          lastNoFaceLookRef.current = now;
+          pip.lookAround();
+          pip.setExpression("curious", 2200);
         }
 
-        await speak(reply.reply);
-      } catch (err) {
-        console.error("conversation error", err);
-        toast.error("Pip couldn't respond just now.");
-        pipRef.current?.setSpeaking(false);
-      } finally {
-        setThinking(false);
-        busyRef.current = false;
+        if (emptyForMs > NO_FACE_NAP_DELAY_MS && !emptyRoomNapRef.current) {
+          emptyRoomNapRef.current = true;
+          moodRef.current = "sleepy";
+          pip.nap();
+          pip.react("sleep", "sleepy");
+        }
       }
-    },
-    [speak]
-  );
 
-  // MediaRecorder fallback (Firefox/Safari): send the recorded clip to Deepgram.
-  const transcribeAudio = useCallback(async (blob: Blob): Promise<string> => {
-    try {
-      const res = await fetch("/api/stt", { method: "POST", body: blob });
-      const d = (await res.json()) as { transcript?: string; error?: string };
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'B',location:'PipStage.tsx:transcribeAudio',message:'stt result',data:{status:res.status,transcriptLen:(d.transcript??'').length,error:d.error??null,blobSize:blob.size},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      return d.transcript ?? "";
-    } catch (err) {
-      console.warn("stt failed", err);
-      return "";
-    }
+      if (facesCount === 0 && !voiceBusy && idleMs > SILENCE_PROMPT_MS) {
+        if (now - lastProactiveAtRef.current > PROACTIVE_GAP_MS) {
+          const cue =
+            proactiveCueRef.current ??
+            (moodRef.current === "sleepy" ? "Zzz… anyone still awake?" : "Hello? Anyone still there?");
+          pip.setBubble(cue);
+          pip.setExpression(moodRef.current === "sleepy" ? "sleepy" : "curious", 2500);
+          if (moodRef.current === "sleepy") pip.react("sleep", "sleepy");
+          lastProactiveAtRef.current = now;
+          proactiveCueRef.current = null;
+          window.setTimeout(() => pipRef.current?.hideBubble(), 3200);
+        }
+      }
+    };
+
+    const id = window.setInterval(tick, 3000);
+    return () => window.clearInterval(id);
+  }, [started, listening, thinking, voiceState]);
+
+  const stopLiveVoice = useCallback(() => {
+    agentMicRef.current?.stop();
+    agentSessionRef.current?.disconnect();
+    agentPlayerRef.current?.dispose();
+    agentMicRef.current = null;
+    agentSessionRef.current = null;
+    agentPlayerRef.current = null;
+    pendingAssistantTextRef.current = null;
+    pendingUserTextRef.current = null;
+    pendingTurnRef.current = null;
+    wasSpeakingRef.current = false;
+    setVoiceState("idle");
+    setListening(false);
+    setThinking(false);
+    pipRef.current?.setListening(false);
+    pipRef.current?.setSpeaking(false);
+    pipRef.current?.setThinking(false);
   }, []);
+
+  const showPendingAssistantText = useCallback(() => {
+    const text = pendingAssistantTextRef.current;
+    if (!text) return;
+    pendingAssistantTextRef.current = null;
+    setCaption(`Pip: “${text}”`);
+    pipRef.current?.setBubble(text);
+    pipRef.current?.setExpression(expressionFromText(text), 3500);
+  }, []);
+
+  const startLiveVoice = useCallback(async () => {
+    if (agentSessionRef.current || voiceState === "connecting") {
+      stopLiveVoice();
+      return;
+    }
+
+    setVoiceState("connecting");
+    setCaption("Connecting Pip's live voice…");
+
+    try {
+      const player = new AgentPlayer({ sampleRate: 24000 });
+      const isFluxListenModel = LIVE_AGENT_LISTEN_MODEL.startsWith("flux-");
+      const livePrompt = buildLiveAgentPrompt();
+      // #region agent log
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:startLiveVoice:prompt',message:'live prompt built for deepgram config',data:{promptLength:livePrompt.length,hasSpokenGuard:livePrompt.includes('Only speak the words the student should hear'),hasStructuredDirective:livePrompt.includes('using the structured fields'),thinkProvider:LIVE_AGENT_THINK_PROVIDER,thinkModel:LIVE_AGENT_THINK_MODEL,promptTail:livePrompt.slice(-400)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      const config: AgentSessionConfig = {
+        auth: {
+          tokenFactory: async () => {
+            const res = await fetch("/api/deepgram-token", { method: "POST" });
+            if (!res.ok) {
+              const error = (await res.json().catch(() => null)) as { message?: string } | null;
+              throw new Error(`Deepgram token ${res.status}${error?.message ? `: ${error.message}` : ""}`);
+            }
+            const data = (await res.json()) as { access_token?: string };
+            if (!data.access_token) throw new Error("Deepgram token missing");
+            return data.access_token;
+          },
+        },
+        audio: {
+          input: { encoding: "linear16", sampleRate: 16000 },
+          output: { encoding: "linear16", sampleRate: 24000 },
+        },
+        agent: {
+          listen: {
+            provider: isFluxListenModel
+              ? {
+                  type: "deepgram",
+                  version: "v2",
+                  model: LIVE_AGENT_LISTEN_MODEL,
+                }
+              : {
+                  type: "deepgram",
+                  version: "v1",
+                  model: LIVE_AGENT_LISTEN_MODEL,
+                  smart_format: true,
+                },
+          },
+          think: {
+            provider: {
+              type: LIVE_AGENT_THINK_PROVIDER,
+              model: LIVE_AGENT_THINK_MODEL,
+              temperature: 0.7,
+            },
+            prompt: livePrompt,
+          },
+          speak: {
+            provider: {
+              type: "deepgram",
+              model: LIVE_AGENT_SPEAK_MODEL,
+            },
+          },
+        },
+        tags: ["pip", "live-voice"],
+      };
+
+      const session = new AgentSession(config);
+      const mic = new AgentMicrophone((data) => session.sendAudio(data), {
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+
+      agentPlayerRef.current = player;
+      agentSessionRef.current = session;
+      agentMicRef.current = mic;
+
+      session.on("settings-applied", () => {
+        setVoiceState("live");
+        setListening(true);
+        setCaption("Pip is live — just talk.");
+        pipRef.current?.setListening(true);
+      });
+
+      session.on("user-started-speaking", () => {
+        if (wasSpeakingRef.current) {
+          pipRef.current?.react("surprise", "surprised");
+        }
+        player.interrupt();
+        setListening(true);
+        setThinking(false);
+        pipRef.current?.setSpeaking(false);
+        pipRef.current?.setThinking(false);
+        pipRef.current?.setListening(true);
+        lastInteractionAtRef.current = Date.now();
+      });
+
+      session.on("agent-thinking", () => {
+        setListening(false);
+        setThinking(true);
+        pipRef.current?.setListening(false);
+        pipRef.current?.setThinking(true);
+        pipRef.current?.setExpression("curious", 1500);
+      });
+
+      session.on("conversation-text", (msg) => {
+        const text = msg.content.trim();
+        // #region agent log
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'B',location:'components/PipStage.tsx:conversation-text',message:'raw conversation-text from deepgram',data:{role:msg.role,content:msg.content,hasCrypticField:/facial_expression|next_mood|nextMood|affinity_update|affinity|traitNote|memoryNote|learnedName|askName/i.test(msg.content)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        if (!text) return;
+
+        if (msg.role === "user") {
+          pendingUserTextRef.current = text;
+          historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
+          setCaption(`You: “${text}”`);
+          lastInteractionAtRef.current = Date.now();
+          return;
+        }
+
+        historyRef.current = [...historyRef.current, { role: "assistant" as const, text }].slice(-12);
+        pendingAssistantTextRef.current = text;
+        if (pendingUserTextRef.current) {
+          pendingTurnRef.current = {
+            userText: pendingUserTextRef.current,
+            assistantText: text,
+          };
+          pendingUserTextRef.current = null;
+        }
+        setThinking(false);
+        pipRef.current?.setThinking(false);
+        lastInteractionAtRef.current = Date.now();
+      });
+
+      session.on("audio", (chunk) => {
+        showPendingAssistantText();
+        player.queue(chunk);
+        pipRef.current?.setSpeaking(true);
+        pipRef.current?.speakingPulse();
+        if (!wasSpeakingRef.current) sounds.play("speak");
+        wasSpeakingRef.current = true;
+      });
+
+      session.on("agent-started-speaking", () => {
+        showPendingAssistantText();
+        setListening(false);
+        setThinking(false);
+        pipRef.current?.setListening(false);
+        pipRef.current?.setThinking(false);
+        pipRef.current?.setSpeaking(true);
+        if (!wasSpeakingRef.current) sounds.play("speak");
+        wasSpeakingRef.current = true;
+      });
+
+      session.on("agent-audio-done", () => {
+        pipRef.current?.setSpeaking(false);
+        wasSpeakingRef.current = false;
+        window.setTimeout(() => pipRef.current?.hideBubble(), 1600);
+
+        const turn = pendingTurnRef.current;
+        if (turn) {
+          void reflectOnTurn(turn.userText, turn.assistantText);
+        }
+      });
+
+      session.on("error", (msg) => {
+        console.error("deepgram agent error", msg);
+        toast.error("Pip's live voice hit a Deepgram error.");
+      });
+
+      session.on("warning", (msg) => {
+        console.warn("deepgram agent warning", msg);
+      });
+
+      session.on("sdk-error", (err) => {
+        console.error("deepgram agent sdk error", err);
+        toast.error("Pip couldn't keep the live voice connected.");
+        stopLiveVoice();
+      });
+
+      mic.on("error", (err) => {
+        console.error("deepgram microphone error", err);
+        toast.error("Pip couldn't access the microphone.");
+        stopLiveVoice();
+      });
+
+      await session.connect();
+      await mic.start();
+    } catch (err) {
+      console.error("live voice failed", err);
+      toast.error("Pip couldn't start live voice.");
+      stopLiveVoice();
+    }
+  }, [buildLiveAgentPrompt, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
 
   const start = useCallback(async () => {
     try {
-      sounds.init(); // preload squawks now that we have a user gesture
+      sounds.init();
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       streamRef.current = stream;
       if (videoRef.current) {
@@ -298,15 +661,10 @@ export function PipStage() {
         await videoRef.current.play().catch(() => {});
       }
       setStarted(true);
+      lastInteractionAtRef.current = Date.now();
 
-      // Load known students (so Pip can recognize faces on sight).
-      try {
-        const r = await fetch("/api/students");
-        const d = (await r.json()) as { students: Student[] };
-        studentsRef.current = d.students ?? [];
-      } catch { /* ignore */ }
+      await reloadStudents();
 
-      // Load + start vision.
       setLoadingVision(true);
       try {
         const vision = new Vision();
@@ -326,21 +684,23 @@ export function PipStage() {
       console.error(err);
       toast.error("Pip needs camera access to see the room.");
     }
-  }, [onVisionFrame]);
+  }, [onVisionFrame, reloadStudents]);
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-background">
-      {/* The parrot — the whole stage is Pip's. */}
       <Pip
         ref={pipRef}
         onPoke={() => {
+          lastInteractionAtRef.current = Date.now();
           pipRef.current?.react("annoyed", "unimpressed");
           sounds.play("surprise");
         }}
-        onHover={() => pipRef.current?.react("music", "happy")}
+        onHover={() => {
+          lastInteractionAtRef.current = Date.now();
+          pipRef.current?.react("music", "happy");
+        }}
       />
 
-      {/* The box: what Pip is seeing. */}
       <div className="absolute bottom-4 right-4 overflow-hidden rounded-xl border border-border bg-black/60 shadow-2xl">
         <video
           ref={videoRef}
@@ -359,36 +719,39 @@ export function PipStage() {
         )}
       </div>
 
-      {/* Subtitles: show what the student said and what Pip says back. */}
       {started && (listening || thinking || caption) && (
         <div className="pointer-events-none absolute bottom-28 left-1/2 z-40 w-[min(92vw,720px)] -translate-x-1/2 text-center">
           <p className="inline-block max-w-full rounded-2xl bg-black/70 px-4 py-2 text-base leading-snug text-white shadow-lg">
-            {listening ? "🎤 Listening…" : caption || (thinking ? "…" : "")}
+            {caption || (listening ? "🎤 Listening…" : thinking ? "…" : "")}
           </p>
         </div>
       )}
 
-      {/* Talk to Pip: tap the mic, speak, and Pip listens + replies aloud. */}
       {started && (
         <div className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col items-center gap-2">
-          <SpeechInput
+          <Button
+            className="rounded-full px-6"
+            disabled={voiceState === "connecting"}
+            onClick={startLiveVoice}
             size="lg"
-            aria-label="Talk to Pip"
-            onListeningChange={(on) => {
-              setListening(on);
-              pipRef.current?.setListening(on);
-              if (on) setCaption("");
-            }}
-            onTranscriptionChange={handleUtterance}
-            onAudioRecorded={transcribeAudio}
-          />
+            variant={voiceState === "live" ? "destructive" : "default"}
+          >
+            {voiceState === "live" ? "Stop live voice" : voiceState === "connecting" ? "Connecting…" : "Start live voice"}
+          </Button>
           <span className="rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
-            {listening ? "Listening — tap again when done" : thinking ? "Pip is thinking…" : "Tap and talk to Pip"}
+            {voiceState === "live"
+              ? listening
+                ? "Live — talk anytime, Pip can barge in naturally"
+                : thinking
+                ? "Pip is thinking…"
+                : "Pip is speaking live…"
+              : voiceState === "connecting"
+              ? "Opening Deepgram live speech…"
+              : "Start once, then talk naturally"}
           </span>
         </div>
       )}
 
-      {/* Start overlay (needed once for camera permission). */}
       {!started && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm">
           <Button size="lg" onClick={start}>Wake up Pip 🦜</Button>

@@ -154,16 +154,10 @@ export const SpeechInput = ({
     speechRecognition.lang = lang;
 
     const handleStart = () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A2',location:'speech-input.tsx:onstart',message:'recognition started',data:{},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setIsListening(true);
     };
 
     const handleEnd = () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A1,A2',location:'speech-input.tsx:onend',message:'recognition ended',data:{},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setIsListening(false);
     };
 
@@ -182,18 +176,12 @@ export const SpeechInput = ({
         }
       }
 
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A',location:'speech-input.tsx:handleResult',message:'speech recognition result',data:{results:speechEvent.results.length,finalLen:finalTranscript.length},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (finalTranscript) {
         onTranscriptionChangeRef.current?.(finalTranscript);
       }
     };
 
-    const handleError = (event: Event) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A1',location:'speech-input.tsx:onerror',message:'recognition error',data:{error:(event as SpeechRecognitionErrorEvent).error},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+    const handleError = () => {
       setIsListening(false);
     };
 
@@ -303,20 +291,11 @@ export const SpeechInput = ({
   }, []);
 
   const toggleListening = useCallback(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A',location:'speech-input.tsx:toggleListening',message:'mic toggled',data:{mode,isListening,hasRecognition:!!recognitionRef.current},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (mode === "speech-recognition" && recognitionRef.current) {
       if (isListening) {
         recognitionRef.current.stop();
       } else {
-        try {
-          recognitionRef.current.start();
-        } catch (err) {
-          // #region agent log
-          fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2db88'},body:JSON.stringify({sessionId:'e2db88',hypothesisId:'A3',location:'speech-input.tsx:start-throw',message:'recognition.start() threw',data:{name:(err as Error)?.name,msg:(err as Error)?.message},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
-        }
+        recognitionRef.current.start();
       }
     } else if (mode === "media-recorder") {
       if (isListening) {

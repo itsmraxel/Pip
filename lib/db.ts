@@ -1,18 +1,22 @@
-// Student persistence. Uses Postgres when DATABASE_URL / POSTGRES_URL is set,
-// otherwise falls back to an in-memory store (with best-effort local JSON file)
-// so the app runs in development without a database.
+// Student persistence. Uses Convex when NEXT_PUBLIC_CONVEX_URL is set,
+// Postgres when DATABASE_URL / POSTGRES_URL is set, otherwise falls back to
+// an in-memory store (with best-effort local JSON file) for development.
 
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Student } from "./types";
+import {
+  convexCreateStudent,
+  convexListStudents,
+  convexUpdateStudent,
+  usingConvex,
+} from "./convexServer";
 
 const CONN = process.env.DATABASE_URL || process.env.POSTGRES_URL || "";
 
 // ---------------- Postgres backend ----------------
 
-// Loosely typed sql tag — the postgres client's generic type isn't worth
-// threading through here.
 /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
 type Sql = any;
 let sqlPromise: Promise<Sql> | null = null;
@@ -40,7 +44,7 @@ async function getSql(): Promise<Sql> {
   return sqlPromise;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
 function rowToStudent(r: any): Student {
   return {
     id: r.id,
@@ -54,7 +58,6 @@ function rowToStudent(r: any): Student {
     lastSeenAt: new Date(r.last_seen_at).toISOString(),
   };
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ---------------- In-memory / file backend ----------------
 
@@ -87,9 +90,12 @@ async function memSave() {
 
 // ---------------- Public API ----------------
 
-export const usingPostgres = Boolean(CONN);
+export const usingPostgres = Boolean(CONN) && !usingConvex;
 
 export async function listStudents(): Promise<Student[]> {
+  if (usingConvex) {
+    return await convexListStudents();
+  }
   if (CONN) {
     const sql = await getSql();
     const rows = await sql`SELECT * FROM students ORDER BY last_seen_at DESC`;
@@ -101,6 +107,17 @@ export async function listStudents(): Promise<Student[]> {
 export async function createStudent(
   data: Partial<Student> & { name: string }
 ): Promise<Student> {
+  if (usingConvex) {
+    return await convexCreateStudent({
+      name: data.name,
+      faceEmbedding: data.faceEmbedding ?? null,
+      voiceProfile: data.voiceProfile ?? null,
+      affinity: data.affinity ?? 0,
+      traits: data.traits ?? [],
+      memory: data.memory ?? [],
+    });
+  }
+
   const now = new Date().toISOString();
   const student: Student = {
     id: randomUUID(),
@@ -129,8 +146,17 @@ export async function createStudent(
 
 export async function updateStudent(
   id: string,
-  patch: Partial<Omit<Student, "id" | "createdAt">>
+  patch: Partial<Omit<Student, "id" | "createdAt">> & {
+    affinityDelta?: number;
+    memoryNote?: string | null;
+    traitNote?: string | null;
+    learnedName?: string | null;
+  }
 ): Promise<Student | null> {
+  if (usingConvex) {
+    return await convexUpdateStudent(id, patch);
+  }
+
   const lastSeenAt = new Date().toISOString();
   if (CONN) {
     const sql = await getSql();

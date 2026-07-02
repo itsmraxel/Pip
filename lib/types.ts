@@ -28,26 +28,40 @@ export interface ChatTurn {
 
 export interface ChatRequest {
   text: string;
-  student: Pick<Student, "name" | "affinity" | "traits" | "memory"> | null;
+  student: (Pick<Student, "name" | "affinity" | "traits" | "memory"> & { id?: string }) | null;
   presence: { faces: number; studentEmotion?: string | null };
   mood: Mood;
   history: ChatTurn[];
 }
 
-export interface ChatResponse {
-  reply: string;
+export interface PipMemoryFields {
   emotion: Expression;
   emote: EmoteType | null;
-  /** Nudge to Pip's affinity toward this student for this turn, -10..10. */
   affinityDelta: number;
-  /** A short new thing worth remembering about the student, if any. */
   memoryNote: string | null;
-  /** A stable personality trait, preference, nickname, or running joke to keep. */
   traitNote: string | null;
-  /** True if Pip should ask the (unknown) speaker for their name. */
   askName: boolean;
-  /** The mood Pip should carry into the next turn. */
   nextMood: Mood;
-  /** Name captured from an unknown student introducing themselves. */
   learnedName: string | null;
 }
+
+export interface ChatResponse extends PipMemoryFields {
+  reply: string;
+}
+
+export interface ReflectionRequest {
+  userText: string;
+  assistantText: string;
+  student: Pick<Student, "id" | "name" | "affinity" | "traits" | "memory"> | null;
+  faceEmbedding: number[] | null;
+  presence: { faces: number; studentEmotion?: string | null };
+  mood: Mood;
+  history: ChatTurn[];
+}
+
+export interface ReflectionResponse extends PipMemoryFields {
+  /** Optional short line Pip might volunteer if the room goes quiet. */
+  proactiveCue: string | null;
+}
+
+export type RoomState = "empty" | "single" | "multi";

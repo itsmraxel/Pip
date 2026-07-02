@@ -1,12 +1,16 @@
 // Pip's squawk sound effects. Preloads the two clips and plays them on
 // interactions, with a small throttle so overlapping events don't spam.
 
-export type SquawkName = "greet" | "surprise" | "random";
+export type SquawkName = "greet" | "surprise" | "random" | "speak";
 
 const SRC = {
   greet: "/sounds/squawk-1.wav",
   surprise: "/sounds/squawk-2.wav",
 } as const;
+
+// squawk-2 is the shortest clip — Pip chirps it as a quick "speaking" flourish
+// instead of literally saying the word "squawk" out loud.
+const SHORTEST: keyof typeof SRC = "surprise";
 
 class Sounds {
   private buffers: Partial<Record<keyof typeof SRC, HTMLAudioElement>> = {};
@@ -38,7 +42,11 @@ class Sounds {
     this.lastPlay = now;
 
     const key: keyof typeof SRC =
-      which === "random" ? (Math.random() < 0.5 ? "greet" : "surprise") : which;
+      which === "random"
+        ? (Math.random() < 0.5 ? "greet" : "surprise")
+        : which === "speak"
+        ? SHORTEST
+        : which;
     const base = this.buffers[key];
     if (!base) {
       this.init();

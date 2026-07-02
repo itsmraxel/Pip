@@ -138,6 +138,8 @@ export class PipController {
   private expressionUntil = 0;
   private speaking = false;
   private listening = false;
+  private thinking = false;
+  private speakPulse = 0;
   private mood: Mood = "cheerful";
 
   private bubbleVisible = false;
@@ -205,11 +207,6 @@ export class PipController {
     container.append(el, bubble, emoteLayer);
     this.setSprite("idle", 0);
 
-    // #region agent log
-    // TEMP debug repro: make Pip chase the cursor so the walk path runs without a camera.
-    this.followCursor = true;
-    // #endregion
-
     document.addEventListener("click", this.onDocClick);
     this.rafId = requestAnimationFrame(this.tick);
   }
@@ -258,6 +255,35 @@ export class PipController {
     this.target = x === null ? null : { x, y };
   }
 
+  /** Small room-scanning movement for no-face ambient behavior. */
+  lookAround() {
+    if (!this.container) return;
+    const rect = this.container.getBoundingClientRect();
+    this.follow = null;
+    this.target = {
+      x: rect.width * (0.25 + Math.random() * 0.5),
+      y: rect.height * (0.45 + Math.random() * 0.25),
+    };
+    this.gaze = {
+      x: rect.width * (0.15 + Math.random() * 0.7),
+      y: rect.height * (0.2 + Math.random() * 0.35),
+    };
+    this.idleAnimation = Math.random() < 0.45 ? "preening" : null;
+    this.idleAnimationFrame = 0;
+    this.idleTime = 0;
+  }
+
+  /** Let Pip settle into a sleepy visible idle when the room is empty. */
+  nap() {
+    this.follow = null;
+    this.target = null;
+    this.gaze = null;
+    this.mood = "sleepy";
+    this.idleAnimation = "sleeping";
+    this.idleAnimationFrame = 0;
+    this.setExpression("sleepy", 5000);
+  }
+
   setExpression(expr: Expression | null, ms = 2600) {
     this.expression = expr;
     this.expressionUntil = expr ? performance.now() + ms : 0;
@@ -272,6 +298,9 @@ export class PipController {
     if (on) {
       this.idleAnimation = null;
       this.idleTime = 0;
+      this.thinking = false;
+    } else {
+      this.speakPulse = 0;
     }
   }
 
@@ -280,7 +309,21 @@ export class PipController {
     if (on) {
       this.idleAnimation = null;
       this.idleTime = 0;
+      this.thinking = false;
     }
+  }
+
+  setThinking(on: boolean) {
+    this.thinking = on;
+    if (on) {
+      this.idleAnimation = null;
+      this.idleTime = 0;
+    }
+  }
+
+  /** Bump beak animation on each audio chunk for livelier speech. */
+  speakingPulse() {
+    if (this.speaking) this.speakPulse += 1;
   }
 
   setMood(mood: Mood) {
@@ -413,9 +456,6 @@ export class PipController {
     }
     const dir = vectorToDirection(this.velX, this.velY) ?? "S";
     this.setSprite(dir, this.walkStep);
-    // #region agent log
-    fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a67b8f'},body:JSON.stringify({sessionId:'a67b8f',runId:'post-fix',hypothesisId:'A,C,D',location:'pipEngine.ts:moveToward-step',message:'walk step shown',data:{frame:this.frame,dir,walkStep:this.walkStep,feetPose:this.walkStep===1?'walkB(right planted,left lifted)':'walkA(left planted,right lifted)',bodyHopOffsetPx:0,strideAcc:+this.stride.toFixed(2),stepDistPx:+moved.toFixed(2),speed:maxSpeed},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return true;
   }
 
@@ -521,17 +561,29 @@ export class PipController {
 
     // Priority 1: talking wins the beak animation, keeps a face if set.
     if (this.speaking) {
-      // Alternate talk frames; if a strong expression is set, flash it occasionally.
       if (this.expression && this.frame % 4 === 0) {
         this.setSprite(this.expression, 0);
       } else {
-        this.setSprite("talk", this.frame);
+        this.setSprite("talk", this.speakPulse + this.frame);
       }
       this.idleTime = 0;
       return;
     }
 
-    // Priority 2: an explicit expression is showing.
+    // Priority 2: thinking — curious blink while the brain works.
+    if (this.thinking) {
+      if (this.frame % 4 === 0) {
+        this.setSprite("curious", 0);
+      } else if (this.frame % 8 === 2) {
+        this.setSprite("idle", 1);
+      } else {
+        this.setSprite("alert", 0);
+      }
+      this.idleTime = 0;
+      return;
+    }
+
+    // Priority 3: an explicit expression is showing.
     if (this.expression && performance.now() < this.expressionUntil) {
       this.setSprite(this.expression, this.frame);
       this.idleTime = 0;
@@ -560,9 +612,13 @@ export class PipController {
       if (this.target && dist <= 48) this.target = null;
     }
 
-    // Priority 4: attentive listening — face the speaker/cursor, crest up.
+    // Priority 4: attentive listening — crest up, lean toward the speaker.
     if (this.listening) {
-      this.faceGaze();
+      if (this.frame % 6 === 0) {
+        this.setSprite("alert", 0);
+      } else {
+        this.faceGaze();
+      }
       this.idleTime = 0;
       return;
     }

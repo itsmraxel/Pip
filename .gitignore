@@ -42,3 +42,7 @@ next-env.d.ts
 
 # Pip local data
 .data/
+
+# Cursor local state
+.cursor/debug-*.log
+.cursor/settings.json

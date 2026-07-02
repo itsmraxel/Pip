@@ -5,7 +5,7 @@ import { createClient } from "@deepgram/sdk";
 
 export const maxDuration = 30;
 
-const TTS_MODEL = process.env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
+const TTS_MODEL = process.env.DEEPGRAM_TTS_MODEL || "aura-2-aurora-en";
 
 export async function POST(req: Request) {
   const key = process.env.DEEPGRAM_API_KEY;
