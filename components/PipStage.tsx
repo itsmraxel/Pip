@@ -94,6 +94,7 @@ export function PipStage() {
 
   const agentSessionRef = useRef<RealtimeSession | null>(null);
   const assistantTranscriptRef = useRef<string>("");
+  const pendingAssistantTextRef = useRef<string | null>(null);
   const pendingUserTextRef = useRef<string | null>(null);
 
   const [started, setStarted] = useState(false);
@@ -486,6 +487,7 @@ export function PipStage() {
     }
     agentSessionRef.current = null;
     assistantTranscriptRef.current = "";
+    pendingAssistantTextRef.current = null;
     pendingUserTextRef.current = null;
     pendingTurnRef.current = null;
     wasSpeakingRef.current = false;
@@ -496,6 +498,12 @@ export function PipStage() {
     pipRef.current?.setSpeaking(false);
     pipRef.current?.setThinking(false);
   }, []);
+
+  const maybeReflectPendingTurn = useCallback(() => {
+    const turn = pendingTurnRef.current;
+    if (!turn || wasSpeakingRef.current) return;
+    void reflectOnTurn(turn.userText, turn.assistantText);
+  }, [reflectOnTurn]);
 
   const startLiveVoice = useCallback(async () => {
     if (agentSessionRef.current || voiceState === "connecting") {
@@ -558,16 +566,13 @@ export function PipStage() {
         wasSpeakingRef.current = true;
       });
 
-      // Pip finished speaking — settle the bubble and reflect on the turn.
+      // Pip finished speaking — settle the bubble and (if we already have both
+      // transcripts) kick off background reflection.
       session.on("audio_stopped", () => {
         pipRef.current?.setSpeaking(false);
         wasSpeakingRef.current = false;
         window.setTimeout(() => pipRef.current?.hideBubble(), 1600);
-
-        const turn = pendingTurnRef.current;
-        if (turn) {
-          void reflectOnTurn(turn.userText, turn.assistantText);
-        }
+        maybeReflectPendingTurn();
       });
 
       // Student barged in while Pip was talking.
@@ -587,6 +592,37 @@ export function PipStage() {
       session.on("error", (event) => {
         console.error("openai realtime error", event);
         toast.error("Pip's live voice hit an error.");
+      });
+
+      // Stable end-of-turn signal from the SDK. This is more reliable than only
+      // relying on transcript.done ordering.
+      session.on("agent_end", (_context, _agent, outputText) => {
+        const text = outputText.trim();
+        assistantTranscriptRef.current = "";
+        if (!text) return;
+
+        setCaption(`Pip: “${text}”`);
+        pipRef.current?.setBubble(text);
+        pipRef.current?.setExpression(expressionFromText(text), 3500);
+        historyRef.current = [
+          ...historyRef.current,
+          { role: "assistant" as const, text },
+        ].slice(-12);
+
+        if (pendingUserTextRef.current) {
+          pendingTurnRef.current = {
+            userText: pendingUserTextRef.current,
+            assistantText: text,
+          };
+          pendingUserTextRef.current = null;
+        } else {
+          // Input transcription can lag response generation; hold the assistant
+          // line and pair it when the user's transcript arrives.
+          pendingAssistantTextRef.current = text;
+        }
+
+        lastInteractionAtRef.current = Date.now();
+        maybeReflectPendingTurn();
       });
 
       // Raw transport events give us fine-grained speech + transcript signals.
@@ -610,6 +646,15 @@ export function PipStage() {
             ].slice(-12);
             setCaption(`You: “${text}”`);
             lastInteractionAtRef.current = Date.now();
+            if (pendingAssistantTextRef.current) {
+              pendingTurnRef.current = {
+                userText: text,
+                assistantText: pendingAssistantTextRef.current,
+              };
+              pendingUserTextRef.current = null;
+              pendingAssistantTextRef.current = null;
+              maybeReflectPendingTurn();
+            }
             break;
           }
           case "response.output_audio_transcript.delta": {
@@ -620,29 +665,6 @@ export function PipStage() {
               pipRef.current?.setBubble(partial);
               pipRef.current?.speakingPulse();
             }
-            break;
-          }
-          case "response.output_audio_transcript.done": {
-            const text = String(
-              event.transcript ?? assistantTranscriptRef.current
-            ).trim();
-            assistantTranscriptRef.current = "";
-            if (!text) break;
-            setCaption(`Pip: “${text}”`);
-            pipRef.current?.setBubble(text);
-            pipRef.current?.setExpression(expressionFromText(text), 3500);
-            historyRef.current = [
-              ...historyRef.current,
-              { role: "assistant" as const, text },
-            ].slice(-12);
-            if (pendingUserTextRef.current) {
-              pendingTurnRef.current = {
-                userText: pendingUserTextRef.current,
-                assistantText: text,
-              };
-              pendingUserTextRef.current = null;
-            }
-            lastInteractionAtRef.current = Date.now();
             break;
           }
           default:
@@ -672,10 +694,11 @@ export function PipStage() {
       pipRef.current?.setListening(true);
     } catch (err) {
       console.error("live voice failed", err);
-      toast.error("Pip couldn't start live voice.");
+      const detail = err instanceof Error ? err.message : null;
+      toast.error(detail ? `Pip couldn't start live voice: ${detail}` : "Pip couldn't start live voice.");
       stopLiveVoice();
     }
-  }, [buildLiveAgentPrompt, reflectOnTurn, stopLiveVoice, voiceState]);
+  }, [buildLiveAgentPrompt, maybeReflectPendingTurn, stopLiveVoice, voiceState]);
 
   const start = useCallback(async () => {
     try {
