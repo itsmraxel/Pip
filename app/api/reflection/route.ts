@@ -72,6 +72,12 @@ export async function POST(req: Request) {
   try {
     const { output } = await generateText({
       model: google(MODEL),
+      // Free-tier Gemini has a low per-minute request quota. The default retry
+      // policy multiplies every turn into several requests, which exhausts the
+      // quota almost immediately and makes memory silently stop working. One
+      // attempt per turn keeps us within budget; a rate-limited turn simply
+      // skips reflection instead of burning the whole window.
+      maxRetries: 0,
       output: Output.object({ schema: reflectionResponseSchema }),
       system: [
         buildSystemPrompt(chatContext),

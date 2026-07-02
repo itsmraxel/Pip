@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Pip, type PipHandle } from "@/components/Pip";
 import { Vision, type VisionFrame } from "@/lib/vision";
-import { matchByFace, matchByName, debugBestFaceScore } from "@/lib/identity";
+import { matchByFace, matchByName, debugBestFaceScore, debugTopTwoFaceScores } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
 import { sounds } from "@/lib/sounds";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
@@ -89,6 +89,9 @@ export function PipStage() {
   const currentNameRef = useRef<string | null>(null);
   // #region agent log
   const lastVisionLogRef = useRef(0);
+  const dbgLastIdRef = useRef<string | null>(null);
+  const dbgLastIdAtRef = useRef(0);
+  const dbgFlipCountRef = useRef(0);
   // #endregion
   const lastInteractionAtRef = useRef(0);
   const lastProactiveAtRef = useRef(0);
@@ -349,8 +352,29 @@ export function PipStage() {
     if (!pip) return;
 
     const faceMatch = matchByFace(f.embedding, studentsRef.current);
+    // #region agent log
+    // H-C: detect per-frame identity flips (matched id changing frame-to-frame).
+    if (f.faces > 0 && f.embedding) {
+      const matchedId = faceMatch?.student.id ?? null;
+      const prevId = dbgLastIdRef.current;
+      if (matchedId !== prevId) {
+        const now = Date.now();
+        const msSincePrev = dbgLastIdAtRef.current ? now - dbgLastIdAtRef.current : -1;
+        dbgFlipCountRef.current += 1;
+        const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'C',location:'components/PipStage.tsx:onVisionFrame',message:'identity flip',data:{prevId,matchedId,matchedName:faceMatch?.student.name??null,msSincePrev,totalFlips:dbgFlipCountRef.current,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:now})}).catch(()=>{});
+        dbgLastIdRef.current = matchedId;
+        dbgLastIdAtRef.current = now;
+      }
+    }
+    // #endregion
     if (faceMatch) currentStudentIdRef.current = faceMatch.student.id;
     // #region agent log
+    // H-B/H-D: throttled snapshot of top-two scores + margin vs threshold.
+    if (f.faces > 0 && f.embedding && Date.now() - lastVisionLogRef.current > 2500) {
+      const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'B',location:'components/PipStage.tsx:onVisionFrame',message:'top-two score snapshot',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:Date.now()})}).catch(()=>{});
+    }
     if (f.faces > 0 && Date.now() - lastVisionLogRef.current > 2500) {
       lastVisionLogRef.current = Date.now();
       const dbg = debugBestFaceScore(f.embedding, studentsRef.current);

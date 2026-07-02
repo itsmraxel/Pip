@@ -46,6 +46,28 @@ export function debugBestFaceScore(
   }
   return { name: best?.name ?? null, id: best?.id ?? null, score: bestScore, threshold: FACE_THRESHOLD, enrolled };
 }
+
+/** DEBUG: top-1 and top-2 matches + margin, to diagnose separation/over-matching. */
+export function debugTopTwoFaceScores(
+  embedding: number[] | null,
+  students: Student[]
+): {
+  top1: { name: string | null; id: string | null; score: number } | null;
+  top2: { name: string | null; id: string | null; score: number } | null;
+  margin: number;
+  threshold: number;
+  enrolled: number;
+} {
+  const enrolled = students.filter((s) => s.faceEmbedding).length;
+  const scored = students
+    .filter((s) => s.faceEmbedding)
+    .map((s) => ({ name: s.name, id: s.id, score: cosine(embedding ?? [], s.faceEmbedding as number[]) }))
+    .sort((a, b) => b.score - a.score);
+  const top1 = scored[0] ?? null;
+  const top2 = scored[1] ?? null;
+  const margin = top1 && top2 ? top1.score - top2.score : top1 ? top1.score : 0;
+  return { top1, top2, margin, threshold: FACE_THRESHOLD, enrolled };
+}
 // #endregion
 
 /** Best face match among students with a stored embedding. */
