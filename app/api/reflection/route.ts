@@ -5,12 +5,12 @@ import { google } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
-import { reflectionResponseSchema } from "@/lib/pipSchema";
+import { reflectionResponseSchema } from "@/lib/jarvisSchema";
 import type { ChatRequest, ReflectionRequest, ReflectionResponse } from "@/lib/types";
 
 export const maxDuration = 30;
 
-const MODEL = process.env.PIP_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.JARVIS_MODEL || "gemini-2.5-flash";
 
 // #region agent log
 function debugLog(hypothesisId: string, message: string, data: unknown) {
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
 
   const history = (body.history ?? [])
     .slice(-8)
-    .map((t) => `${t.role === "user" ? "Student" : "Pip"}: ${t.text}`)
+    .map((t) => `${t.role === "user" ? "Person" : "Jarvis"}: ${t.text}`)
     .join("\n");
 
   try {
@@ -83,18 +83,18 @@ export async function POST(req: Request) {
         buildSystemPrompt(chatContext),
         "",
         "REFLECTION MODE:",
-        "- Pip already spoke aloud. Do NOT write a new reply to the student.",
-        "- Analyze the exchange that just happened and report Pip's updated internal state.",
+        "- Jarvis already spoke aloud. Do NOT write a new reply to the student.",
+        "- Analyze the exchange that just happened and report Jarvis's updated internal state.",
         "- Set learnedName whenever the student states their own name (e.g. \"I'm Sam\", \"my name is Sam\"), EVEN IF the recognized name in context is different — a different spoken name means this is a different person.",
         "- Do not invent a name; only set learnedName from a name the student actually said.",
         "- Only set memoryNote or traitNote for genuinely new, stable facts.",
-        "- proactiveCue is optional: a tiny spontaneous line Pip might say if the room goes quiet.",
+        "- proactiveCue is optional: a tiny spontaneous line Jarvis might say if the room goes quiet.",
       ].join("\n"),
       prompt: [
         history ? `Recent conversation:\n${history}\n` : "",
         `The student just said: "${body.userText}"`,
-        `Pip just replied aloud: "${body.assistantText}"`,
-        "Reflect on this exchange as Pip.",
+        `Jarvis just replied aloud: "${body.assistantText}"`,
+        "Reflect on this exchange as Jarvis.",
       ]
         .filter(Boolean)
         .join("\n"),

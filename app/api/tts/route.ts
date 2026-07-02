@@ -1,4 +1,4 @@
-// Text-to-speech: turns Pip's reply into spoken audio via Deepgram Aura.
+// Text-to-speech: turns Jarvis's reply into spoken audio via Deepgram Aura.
 // Returns an MP3 stream the browser plays while the bubble text shows.
 
 import { createClient } from "@deepgram/sdk";

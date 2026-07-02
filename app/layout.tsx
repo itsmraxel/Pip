@@ -16,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pip — your classroom parrot",
-  description: "A living parrot that talks with, sees, and remembers your students.",
+  title: "Jarvis — your bootcamp AI friend",
+  description: "An AI friend that talks with, sees, and remembers the people going through the bootcamp.",
 };
 
 export default function RootLayout({

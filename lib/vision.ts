@@ -1,6 +1,6 @@
 // Vision: wraps @vladmandic/human to detect faces from the webcam, produce a
 // face embedding (to recognize students on sight), read the student's emotion,
-// and locate the nearest face (so Pip can look toward whoever's talking).
+// and locate the nearest face (so Jarvis can look toward whoever's talking).
 //
 // Human is dynamically imported (it's large + browser-only) and typed loosely
 // on purpose — we only touch a small, stable slice of its result shape.

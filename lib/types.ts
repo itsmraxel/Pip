@@ -1,6 +1,6 @@
-// Shared types for Pip's students and conversation.
+// Shared types for Jarvis's students and conversation.
 
-import type { Expression, EmoteType, Mood } from "./pipEngine";
+import type { Expression, EmoteType, Mood } from "./jarvisEngine";
 
 export type { Expression, EmoteType, Mood };
 
@@ -11,9 +11,9 @@ export interface Student {
   faceEmbedding: number[] | null;
   /** Base64-encoded Picovoice Eagle voice profile (recognize by voice). */
   voiceProfile: string | null;
-  /** Pip's feeling toward this student, -100 (cool) .. 100 (adores). */
+  /** Jarvis's feeling toward this student, -100 (cool) .. 100 (adores). */
   affinity: number;
-  /** Short traits / running jokes / nicknames Pip has invented. */
+  /** Short traits / running jokes / nicknames Jarvis has invented. */
   traits: string[];
   /** Summarized memory bullets from past conversations. */
   memory: string[];
@@ -34,7 +34,7 @@ export interface ChatRequest {
   history: ChatTurn[];
 }
 
-export interface PipMemoryFields {
+export interface JarvisMemoryFields {
   emotion: Expression;
   emote: EmoteType | null;
   affinityDelta: number;
@@ -45,7 +45,7 @@ export interface PipMemoryFields {
   learnedName: string | null;
 }
 
-export interface ChatResponse extends PipMemoryFields {
+export interface ChatResponse extends JarvisMemoryFields {
   reply: string;
 }
 
@@ -59,8 +59,8 @@ export interface ReflectionRequest {
   history: ChatTurn[];
 }
 
-export interface ReflectionResponse extends PipMemoryFields {
-  /** Optional short line Pip might volunteer if the room goes quiet. */
+export interface ReflectionResponse extends JarvisMemoryFields {
+  /** Optional short line Jarvis might volunteer if the room goes quiet. */
   proactiveCue: string | null;
 }
 

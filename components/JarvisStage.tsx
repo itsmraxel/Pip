@@ -4,11 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentMicrophone, AgentPlayer, AgentSession, type AgentSessionConfig } from "@deepgram/agents";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Pip, type PipHandle } from "@/components/Pip";
+import { Jarvis, type JarvisHandle } from "@/components/Jarvis";
 import { Vision, type VisionFrame } from "@/lib/vision";
 import { matchByFace, matchByName, debugBestFaceScore, debugTopTwoFaceScores } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
-import { sounds } from "@/lib/sounds";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
 import type { ChatRequest, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
 
@@ -62,8 +61,8 @@ function roomStateFromFaces(faces: number): RoomState {
   return "single";
 }
 
-export function PipStage() {
-  const pipRef = useRef<PipHandle>(null);
+export function JarvisStage() {
+  const jarvisRef = useRef<JarvisHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const visionRef = useRef<Vision | null>(null);
@@ -126,7 +125,7 @@ export function PipStage() {
     // #region agent log
     {
       const dbg = debugBestFaceScore(lastEmbeddingRef.current, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/PipStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,via:namedStudent?'name':(faceMatch?'face':'none'),currentNameRef:currentNameRef.current,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/JarvisStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,via:namedStudent?'name':(faceMatch?'face':'none'),currentNameRef:currentNameRef.current,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
     }
     // #endregion
 
@@ -170,7 +169,7 @@ export function PipStage() {
       const d = (await r.json()) as { students: Student[] };
       studentsRef.current = d.students ?? [];
       // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'C',location:'components/PipStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'C',location:'components/JarvisStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
     } catch {
       /* keep in-memory roster */
@@ -179,10 +178,10 @@ export function PipStage() {
 
   const applyReflectionAnimation = useCallback((reflection: ReflectionResponse) => {
     moodRef.current = reflection.nextMood;
-    pipRef.current?.setMood(reflection.nextMood);
-    pipRef.current?.setExpression(reflection.emotion, 3500);
+    jarvisRef.current?.setMood(reflection.nextMood);
+    jarvisRef.current?.setExpression(reflection.emotion, 3500);
     if (reflection.emote) {
-      pipRef.current?.react(reflection.emote, reflection.emotion);
+      jarvisRef.current?.react(reflection.emote, reflection.emotion);
     }
     proactiveCueRef.current = reflection.proactiveCue;
   }, []);
@@ -211,7 +210,7 @@ export function PipStage() {
       // #region agent log
       {
         const branch = isNewPerson ? "create-new" : student ? "update-existing" : "skip-no-id";
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'B',location:'components/PipStage.tsx:persistReflection',message:'persist decision',data:{learnedName,nameToUse,namedStudentId:namedStudent?.id??null,resolvedStudentId:resolved?.id??null,faceMatchName:faceMatch?.student.name??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,currentNameRef:currentNameRef.current,branch,targetStudentId:student?.id??null,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'B',location:'components/JarvisStage.tsx:persistReflection',message:'persist decision',data:{learnedName,nameToUse,namedStudentId:namedStudent?.id??null,resolvedStudentId:resolved?.id??null,faceMatchName:faceMatch?.student.name??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,currentNameRef:currentNameRef.current,branch,targetStudentId:student?.id??null,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
       }
       // #endregion
 
@@ -348,8 +347,8 @@ export function PipStage() {
       noFaceSinceRef.current = null;
       emptyRoomNapRef.current = false;
     }
-    const pip = pipRef.current;
-    if (!pip) return;
+    const jarvis = jarvisRef.current;
+    if (!jarvis) return;
 
     const faceMatch = matchByFace(f.embedding, studentsRef.current);
     // #region agent log
@@ -362,7 +361,7 @@ export function PipStage() {
         const msSincePrev = dbgLastIdAtRef.current ? now - dbgLastIdAtRef.current : -1;
         dbgFlipCountRef.current += 1;
         const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'C',location:'components/PipStage.tsx:onVisionFrame',message:'identity flip',data:{prevId,matchedId,matchedName:faceMatch?.student.name??null,msSincePrev,totalFlips:dbgFlipCountRef.current,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:now})}).catch(()=>{});
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'C',location:'components/JarvisStage.tsx:onVisionFrame',message:'identity flip',data:{prevId,matchedId,matchedName:faceMatch?.student.name??null,msSincePrev,totalFlips:dbgFlipCountRef.current,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:now})}).catch(()=>{});
         dbgLastIdRef.current = matchedId;
         dbgLastIdAtRef.current = now;
       }
@@ -373,28 +372,28 @@ export function PipStage() {
     // H-B/H-D: throttled snapshot of top-two scores + margin vs threshold.
     if (f.faces > 0 && f.embedding && Date.now() - lastVisionLogRef.current > 2500) {
       const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'B',location:'components/PipStage.tsx:onVisionFrame',message:'top-two score snapshot',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'B',location:'components/JarvisStage.tsx:onVisionFrame',message:'top-two score snapshot',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:Date.now()})}).catch(()=>{});
     }
     if (f.faces > 0 && Date.now() - lastVisionLogRef.current > 2500) {
       lastVisionLogRef.current = Date.now();
       const dbg = debugBestFaceScore(f.embedding, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/PipStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/JarvisStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
     }
     // #endregion
 
     if (f.nearest) {
-      const { width } = pip.stageSize();
+      const { width } = jarvis.stageSize();
       const nx = MIRROR ? 1 - f.nearest.x : f.nearest.x;
-      pip.setFollow(nx * width);
+      jarvis.setFollow(nx * width);
 
       const now = Date.now();
       if (f.emotion && (f.emotion !== lastEmotionRef.current.label || now - lastEmotionRef.current.at > 4000)) {
         lastEmotionRef.current = { label: f.emotion, at: now };
         const expr = EMOTION_MAP[f.emotion];
-        if (expr) pip.setExpression(expr, 2000);
+        if (expr) jarvis.setExpression(expr, 2000);
       }
     } else {
-      pip.setFollow(null);
+      jarvis.setFollow(null);
     }
 
     if (f.faces > lastFaceCountRef.current) {
@@ -402,18 +401,15 @@ export function PipStage() {
       const now = Date.now();
       if (match && now - (lastGreetRef.current[match.student.id] ?? 0) > 30_000) {
         lastGreetRef.current[match.student.id] = now;
-        pip.react("love", "happy");
-        pip.setBubble(`Hi ${match.student.name}!`);
-        sounds.play("greet");
-        window.setTimeout(() => pipRef.current?.hideBubble(), 2400);
+        jarvis.react("love", "happy");
+        jarvis.setBubble(`Hi ${match.student.name}!`);
+        window.setTimeout(() => jarvisRef.current?.hideBubble(), 2400);
       } else if (!match) {
-        pip.react("sparkle", "excited");
-        pip.setBubble("Oh! Someone new!");
-        sounds.play("surprise");
-        window.setTimeout(() => pipRef.current?.hideBubble(), 2200);
+        jarvis.react("sparkle", "excited");
+        jarvis.setBubble("Oh! Someone new!");
+        window.setTimeout(() => jarvisRef.current?.hideBubble(), 2200);
       } else {
-        pip.react("sparkle", "excited");
-        sounds.play("surprise");
+        jarvis.react("sparkle", "excited");
       }
       lastInteractionAtRef.current = now;
     }
@@ -422,9 +418,9 @@ export function PipStage() {
       const now = Date.now();
       if (now - lastMultiFaceAckRef.current > MULTI_FACE_GAP_MS) {
         lastMultiFaceAckRef.current = now;
-        pip.react("sparkle", "curious");
-        pip.setBubble(`Wow — ${f.faces} of you!`);
-        window.setTimeout(() => pipRef.current?.hideBubble(), 2400);
+        jarvis.react("sparkle", "curious");
+        jarvis.setBubble(`Wow — ${f.faces} of you!`);
+        window.setTimeout(() => jarvisRef.current?.hideBubble(), 2400);
       }
     }
 
@@ -436,29 +432,29 @@ export function PipStage() {
     if (!started) return;
 
     const tick = () => {
-      const pip = pipRef.current;
-      if (!pip) return;
+      const jarvis = jarvisRef.current;
+      if (!jarvis) return;
 
       const now = Date.now();
       const idleMs = now - lastInteractionAtRef.current;
       const facesCount = facesRef.current;
       const voiceBusy = voiceState === "live" && (listening || thinking);
 
-      pip.setMood(moodRef.current);
+      jarvis.setMood(moodRef.current);
 
       if (facesCount === 0 && !voiceBusy) {
         const emptyForMs = noFaceSinceRef.current ? now - noFaceSinceRef.current : 0;
         if (emptyForMs > NO_FACE_LOOK_DELAY_MS && now - lastNoFaceLookRef.current > NO_FACE_LOOK_GAP_MS) {
           lastNoFaceLookRef.current = now;
-          pip.lookAround();
-          pip.setExpression("curious", 2200);
+          jarvis.lookAround();
+          jarvis.setExpression("curious", 2200);
         }
 
         if (emptyForMs > NO_FACE_NAP_DELAY_MS && !emptyRoomNapRef.current) {
           emptyRoomNapRef.current = true;
           moodRef.current = "sleepy";
-          pip.nap();
-          pip.react("sleep", "sleepy");
+          jarvis.nap();
+          jarvis.react("sleep", "sleepy");
         }
       }
 
@@ -467,12 +463,12 @@ export function PipStage() {
           const cue =
             proactiveCueRef.current ??
             (moodRef.current === "sleepy" ? "Zzz… anyone still awake?" : "Hello? Anyone still there?");
-          pip.setBubble(cue);
-          pip.setExpression(moodRef.current === "sleepy" ? "sleepy" : "curious", 2500);
-          if (moodRef.current === "sleepy") pip.react("sleep", "sleepy");
+          jarvis.setBubble(cue);
+          jarvis.setExpression(moodRef.current === "sleepy" ? "sleepy" : "curious", 2500);
+          if (moodRef.current === "sleepy") jarvis.react("sleep", "sleepy");
           lastProactiveAtRef.current = now;
           proactiveCueRef.current = null;
-          window.setTimeout(() => pipRef.current?.hideBubble(), 3200);
+          window.setTimeout(() => jarvisRef.current?.hideBubble(), 3200);
         }
       }
     };
@@ -495,18 +491,18 @@ export function PipStage() {
     setVoiceState("idle");
     setListening(false);
     setThinking(false);
-    pipRef.current?.setListening(false);
-    pipRef.current?.setSpeaking(false);
-    pipRef.current?.setThinking(false);
+    jarvisRef.current?.setListening(false);
+    jarvisRef.current?.setSpeaking(false);
+    jarvisRef.current?.setThinking(false);
   }, []);
 
   const showPendingAssistantText = useCallback(() => {
     const text = pendingAssistantTextRef.current;
     if (!text) return;
     pendingAssistantTextRef.current = null;
-    setCaption(`Pip: “${text}”`);
-    pipRef.current?.setBubble(text);
-    pipRef.current?.setExpression(expressionFromText(text), 3500);
+    setCaption(`Jarvis: “${text}”`);
+    jarvisRef.current?.setBubble(text);
+    jarvisRef.current?.setExpression(expressionFromText(text), 3500);
   }, []);
 
   const startLiveVoice = useCallback(async () => {
@@ -516,14 +512,14 @@ export function PipStage() {
     }
 
     setVoiceState("connecting");
-    setCaption("Connecting Pip's live voice…");
+    setCaption("Connecting Jarvis's live voice…");
 
     try {
       const player = new AgentPlayer({ sampleRate: 24000 });
       const isFluxListenModel = LIVE_AGENT_LISTEN_MODEL.startsWith("flux-");
       const livePrompt = buildLiveAgentPrompt();
       // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'A',location:'components/PipStage.tsx:startLiveVoice:prompt',message:'live prompt built for deepgram config',data:{promptLength:livePrompt.length,hasSpokenGuard:livePrompt.includes('Only speak the words the student should hear'),hasStructuredDirective:livePrompt.includes('using the structured fields'),thinkProvider:LIVE_AGENT_THINK_PROVIDER,thinkModel:LIVE_AGENT_THINK_MODEL,promptTail:livePrompt.slice(-400)},timestamp:Date.now()})}).catch(()=>{});
+      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'A',location:'components/JarvisStage.tsx:startLiveVoice:prompt',message:'live prompt built for deepgram config',data:{promptLength:livePrompt.length,hasSpokenGuard:livePrompt.includes('Only speak the words the student should hear'),hasStructuredDirective:livePrompt.includes('using the structured fields'),thinkProvider:LIVE_AGENT_THINK_PROVIDER,thinkModel:LIVE_AGENT_THINK_MODEL,promptTail:livePrompt.slice(-400)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
       const config: AgentSessionConfig = {
         auth: {
@@ -572,7 +568,7 @@ export function PipStage() {
             },
           },
         },
-        tags: ["pip", "live-voice"],
+        tags: ["jarvis", "live-voice"],
       };
 
       const session = new AgentSession(config);
@@ -590,35 +586,35 @@ export function PipStage() {
       session.on("settings-applied", () => {
         setVoiceState("live");
         setListening(true);
-        setCaption("Pip is live — just talk.");
-        pipRef.current?.setListening(true);
+        setCaption("Jarvis is live — just talk.");
+        jarvisRef.current?.setListening(true);
       });
 
       session.on("user-started-speaking", () => {
         if (wasSpeakingRef.current) {
-          pipRef.current?.react("surprise", "surprised");
+          jarvisRef.current?.react("surprise", "surprised");
         }
         player.interrupt();
         setListening(true);
         setThinking(false);
-        pipRef.current?.setSpeaking(false);
-        pipRef.current?.setThinking(false);
-        pipRef.current?.setListening(true);
+        jarvisRef.current?.setSpeaking(false);
+        jarvisRef.current?.setThinking(false);
+        jarvisRef.current?.setListening(true);
         lastInteractionAtRef.current = Date.now();
       });
 
       session.on("agent-thinking", () => {
         setListening(false);
         setThinking(true);
-        pipRef.current?.setListening(false);
-        pipRef.current?.setThinking(true);
-        pipRef.current?.setExpression("curious", 1500);
+        jarvisRef.current?.setListening(false);
+        jarvisRef.current?.setThinking(true);
+        jarvisRef.current?.setExpression("curious", 1500);
       });
 
       session.on("conversation-text", (msg) => {
         const text = msg.content.trim();
         // #region agent log
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'B',location:'components/PipStage.tsx:conversation-text',message:'raw conversation-text from deepgram',data:{role:msg.role,content:msg.content,hasCrypticField:/facial_expression|next_mood|nextMood|affinity_update|affinity|traitNote|memoryNote|learnedName|askName/i.test(msg.content)},timestamp:Date.now()})}).catch(()=>{});
+        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'B',location:'components/JarvisStage.tsx:conversation-text',message:'raw conversation-text from deepgram',data:{role:msg.role,content:msg.content,hasCrypticField:/facial_expression|next_mood|nextMood|affinity_update|affinity|traitNote|memoryNote|learnedName|askName/i.test(msg.content)},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
         if (!text) return;
 
@@ -640,16 +636,15 @@ export function PipStage() {
           pendingUserTextRef.current = null;
         }
         setThinking(false);
-        pipRef.current?.setThinking(false);
+        jarvisRef.current?.setThinking(false);
         lastInteractionAtRef.current = Date.now();
       });
 
       session.on("audio", (chunk) => {
         showPendingAssistantText();
         player.queue(chunk);
-        pipRef.current?.setSpeaking(true);
-        pipRef.current?.speakingPulse();
-        if (!wasSpeakingRef.current) sounds.play("speak");
+        jarvisRef.current?.setSpeaking(true);
+        jarvisRef.current?.speakingPulse();
         wasSpeakingRef.current = true;
       });
 
@@ -657,17 +652,16 @@ export function PipStage() {
         showPendingAssistantText();
         setListening(false);
         setThinking(false);
-        pipRef.current?.setListening(false);
-        pipRef.current?.setThinking(false);
-        pipRef.current?.setSpeaking(true);
-        if (!wasSpeakingRef.current) sounds.play("speak");
+        jarvisRef.current?.setListening(false);
+        jarvisRef.current?.setThinking(false);
+        jarvisRef.current?.setSpeaking(true);
         wasSpeakingRef.current = true;
       });
 
       session.on("agent-audio-done", () => {
-        pipRef.current?.setSpeaking(false);
+        jarvisRef.current?.setSpeaking(false);
         wasSpeakingRef.current = false;
-        window.setTimeout(() => pipRef.current?.hideBubble(), 1600);
+        window.setTimeout(() => jarvisRef.current?.hideBubble(), 1600);
 
         const turn = pendingTurnRef.current;
         if (turn) {
@@ -677,7 +671,7 @@ export function PipStage() {
 
       session.on("error", (msg) => {
         console.error("deepgram agent error", msg);
-        toast.error("Pip's live voice hit a Deepgram error.");
+        toast.error("Jarvis's live voice hit a Deepgram error.");
       });
 
       session.on("warning", (msg) => {
@@ -686,13 +680,13 @@ export function PipStage() {
 
       session.on("sdk-error", (err) => {
         console.error("deepgram agent sdk error", err);
-        toast.error("Pip couldn't keep the live voice connected.");
+        toast.error("Jarvis couldn't keep the live voice connected.");
         stopLiveVoice();
       });
 
       mic.on("error", (err) => {
         console.error("deepgram microphone error", err);
-        toast.error("Pip couldn't access the microphone.");
+        toast.error("Jarvis couldn't access the microphone.");
         stopLiveVoice();
       });
 
@@ -700,14 +694,13 @@ export function PipStage() {
       await mic.start();
     } catch (err) {
       console.error("live voice failed", err);
-      toast.error("Pip couldn't start live voice.");
+      toast.error("Jarvis couldn't start live voice.");
       stopLiveVoice();
     }
   }, [buildLiveAgentPrompt, reflectOnTurn, showPendingAssistantText, stopLiveVoice, voiceState]);
 
   const start = useCallback(async () => {
     try {
-      sounds.init();
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       streamRef.current = stream;
       if (videoRef.current) {
@@ -732,26 +725,24 @@ export function PipStage() {
         setLoadingVision(false);
       }
 
-      pipRef.current?.react("sparkle", "excited");
-      sounds.play("greet");
+      jarvisRef.current?.react("sparkle", "excited");
     } catch (err) {
       console.error(err);
-      toast.error("Pip needs camera access to see the room.");
+      toast.error("Jarvis needs camera access to see the room.");
     }
   }, [onVisionFrame, reloadStudents]);
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-background">
-      <Pip
-        ref={pipRef}
+      <Jarvis
+        ref={jarvisRef}
         onPoke={() => {
           lastInteractionAtRef.current = Date.now();
-          pipRef.current?.react("annoyed", "unimpressed");
-          sounds.play("surprise");
+          jarvisRef.current?.react("annoyed", "unimpressed");
         }}
         onHover={() => {
           lastInteractionAtRef.current = Date.now();
-          pipRef.current?.react("music", "happy");
+          jarvisRef.current?.react("music", "happy");
         }}
       />
 
@@ -764,11 +755,11 @@ export function PipStage() {
           style={{ opacity: started ? 1 : 0 }}
         />
         <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/50 px-2 py-0.5 text-xs text-white/90">
-          Pip&apos;s view · {faces} {faces === 1 ? "person" : "people"}
+          Jarvis&apos;s view · {faces} {faces === 1 ? "person" : "people"}
         </div>
         {loadingVision && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white/90">
-            Waking Pip&apos;s eyes…
+            Waking Jarvis&apos;s eyes…
           </div>
         )}
       </div>
@@ -795,10 +786,10 @@ export function PipStage() {
           <span className="rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
             {voiceState === "live"
               ? listening
-                ? "Live — talk anytime, Pip can barge in naturally"
+                ? "Live — talk anytime, Jarvis can barge in naturally"
                 : thinking
-                ? "Pip is thinking…"
-                : "Pip is speaking live…"
+                ? "Jarvis is thinking…"
+                : "Jarvis is speaking live…"
               : voiceState === "connecting"
               ? "Opening Deepgram live speech…"
               : "Start once, then talk naturally"}
@@ -808,7 +799,7 @@ export function PipStage() {
 
       {!started && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-          <Button size="lg" onClick={start}>Wake up Pip 🦜</Button>
+          <Button size="lg" onClick={start}>Wake up Jarvis</Button>
         </div>
       )}
     </div>

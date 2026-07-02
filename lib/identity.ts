@@ -1,6 +1,6 @@
 // Identity: turn raw recognition signals (a face embedding + an optional voice
 // match) into "which student is this?" with a confidence. Face is the on-sight
-// signal; voice confirms/strengthens it. Conservative thresholds mean Pip asks
+// signal; voice confirms/strengthens it. Conservative thresholds mean Jarvis asks
 // rather than guessing wrong.
 
 import type { Student } from "./types";

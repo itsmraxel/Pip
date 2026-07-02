@@ -1,9 +1,9 @@
-import { PipStageClient } from "@/components/PipStageClient";
+import { JarvisStageClient } from "@/components/JarvisStageClient";
 
 export default function Home() {
   return (
     <main className="h-dvh w-screen overflow-hidden">
-      <PipStageClient />
+      <JarvisStageClient />
     </main>
   );
 }
