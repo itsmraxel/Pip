@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentMicrophone, AgentPlayer, AgentSession, type AgentSessionConfig } from "@deepgram/agents";
 import { toast } from "sonner";
-import { ChevronDown, MessageSquare } from "lucide-react";
+import { ChevronDown, MessageSquare, SendHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Conversation,
   ConversationContent,
@@ -19,7 +20,7 @@ import { matchByFace, matchByName } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
 import { PERSONALITIES, DEFAULT_PERSONALITY_ID, getPersonality, type PersonalityId } from "@/lib/personalities";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
-import type { ChatRequest, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
+import type { ChatRequest, ChatResponse, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
 
 const MIRROR = true;
 const PROACTIVE_GAP_MS = 60_000;
@@ -134,7 +135,10 @@ export function JarvisStage() {
   };
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatOpen, setChatOpen] = useState(true);
+  const [chatInput, setChatInput] = useState("");
+  const [sending, setSending] = useState(false);
   const msgIdRef = useRef(0);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Grab a square snapshot of the current speaker from the webcam to use as
   // their chat profile picture. Returns the data URL (or null if the video
@@ -158,6 +162,101 @@ export function JarvisStage() {
       return null; // tainted canvas or unsupported — fall back to initials
     }
   }, []);
+
+  // Speak a reply out loud via /api/tts using the active personality's voice.
+  // Best-effort: stays silent (text still shows) if TTS isn't configured.
+  const speakText = useCallback(async (text: string) => {
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: getPersonality(personalityRef.current).voice }),
+      });
+      if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
+      ttsAudioRef.current?.pause();
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      jarvisRef.current?.setSpeaking(true);
+      const done = () => {
+        jarvisRef.current?.setSpeaking(false);
+        URL.revokeObjectURL(url);
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      await audio.play().catch(() => done());
+    } catch {
+      /* TTS unavailable — the typed reply is still shown in the transcript */
+    }
+  }, []);
+
+  // Typed-chat path for people who would rather not talk. Sends the message to
+  // /api/chat (independent of live voice), shows both turns in the transcript,
+  // animates the avatar, and speaks the reply.
+  const sendTypedMessage = useCallback(
+    async (raw: string) => {
+      const text = raw.trim();
+      if (!text || sending) return;
+      setChatInput("");
+      setSending(true);
+
+      const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
+      const namedStudent = matchByName(currentNameRef.current, studentsRef.current);
+      const student = namedStudent ?? faceMatch?.student ?? null;
+      if (student) {
+        currentStudentIdRef.current = student.id;
+        currentNameRef.current = student.name;
+      }
+
+      const photo = capturePersonPhoto();
+      historyRef.current = [...historyRef.current, { role: "user" as const, text }].slice(-12);
+      setMessages((prev) => [...prev, { id: `m${msgIdRef.current++}`, role: "user", text, photo }]);
+      setThinking(true);
+      jarvisRef.current?.setThinking(true);
+      lastInteractionAtRef.current = Date.now();
+
+      try {
+        const payload: ChatRequest = {
+          text,
+          student: student
+            ? { id: student.id, name: student.name, affinity: student.affinity, traits: student.traits, memory: student.memory }
+            : null,
+          presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
+          mood: moodRef.current,
+          personality: personalityRef.current,
+          history: historyRef.current,
+        };
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`chat ${res.status}`);
+        const reply = (await res.json()) as ChatResponse;
+
+        historyRef.current = [...historyRef.current, { role: "assistant" as const, text: reply.reply }].slice(-12);
+        setMessages((prev) => [
+          ...prev,
+          { id: `m${msgIdRef.current++}`, role: "assistant", text: reply.reply, emoji: getPersonality(personalityRef.current).emoji },
+        ]);
+        moodRef.current = reply.nextMood;
+        jarvisRef.current?.setMood(reply.nextMood);
+        jarvisRef.current?.setBubble(reply.reply);
+        jarvisRef.current?.setExpression(reply.emotion, 3500);
+        if (reply.emote) jarvisRef.current?.react(reply.emote, reply.emotion);
+        window.setTimeout(() => jarvisRef.current?.hideBubble(), 4000);
+        void speakText(reply.reply);
+      } catch (err) {
+        console.error("typed chat failed", err);
+        toast.error(`${getPersonality(personalityRef.current).name} couldn't reply just now.`);
+      } finally {
+        setThinking(false);
+        jarvisRef.current?.setThinking(false);
+        setSending(false);
+      }
+    },
+    [sending, capturePersonPhoto, speakText]
+  );
 
   const buildLiveAgentPrompt = useCallback(() => {
     const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
@@ -817,7 +916,7 @@ export function JarvisStage() {
                     <ConversationEmptyState
                       className="p-4"
                       title="No messages yet"
-                      description={`Talk to ${activePersona.name} — your conversation appears here.`}
+                      description={`Talk or type to ${activePersona.name} — your conversation appears here.`}
                     />
                   ) : (
                     messages.map((m) => (
@@ -842,6 +941,35 @@ export function JarvisStage() {
                 </ConversationContent>
                 <ConversationScrollButton />
               </Conversation>
+            )}
+            {chatOpen && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  sendTypedMessage(chatInput);
+                }}
+                className="flex items-center gap-1.5 border-t border-border bg-background/95 p-2"
+              >
+                <Input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  disabled={voiceState === "live" || sending}
+                  placeholder={
+                    voiceState === "live" ? "Live voice on — just talk" : `Message ${activePersona.name}…`
+                  }
+                  aria-label={`Message ${activePersona.name}`}
+                  className="h-8 flex-1"
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  disabled={voiceState === "live" || sending || !chatInput.trim()}
+                  aria-label="Send message"
+                >
+                  <SendHorizontal className="size-4" />
+                </Button>
+              </form>
             )}
           </div>
         )}
