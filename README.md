@@ -1,10 +1,11 @@
-# Pip 🦜
+# Jarvis
 
-A living classroom parrot. Pip **talks** with students (OpenAI Realtime speech-to-speech for
-live voice, plus the Vercel AI SDK with OpenAI for reflection), **sees and recognizes** them by
-face (MediaPipe/Human) and optionally by voice (Picovoice Eagle), shows what it's saying in a
-speech bubble, has **facial expressions** and moods, reacts to the cursor, and **remembers**
-each student — playing favorites (kindly).
+An AI friend that helps people get through their coding bootcamp. Jarvis **talks** with
+people (OpenAI Realtime speech-to-speech for live voice, plus the Vercel AI SDK with
+OpenAI for reflection and typed chat), **sees and recognizes** them by face
+(MediaPipe/Human) and optionally by voice (Picovoice Eagle), shows what it's saying in a
+speech bubble, has **facial expressions** and moods, reacts to the cursor, and
+**remembers** each person — playing favorites (kindly).
 
 Built on **Next.js (App Router)**, **shadcn/ui**, and **AI Elements** (including the voice
 components: Speech Input, Transcription, Audio Player, etc.).
@@ -17,7 +18,7 @@ npm install
 npm run dev                  # http://localhost:3000
 ```
 
-Click **Wake up Pip** and allow camera + microphone.
+Click **Wake up Jarvis** and allow camera + microphone.
 
 ## Keys
 
@@ -32,23 +33,23 @@ ephemeral token from `/api/realtime-token` for the live voice loop, and the serv
 (`/api/reflection`, `/api/chat`, `/api/tts`, `/api/stt`) call OpenAI directly.
 
 Optional model overrides: `NEXT_PUBLIC_OPENAI_REALTIME_MODEL` / `OPENAI_REALTIME_MODEL`
-(default `gpt-realtime`), `NEXT_PUBLIC_OPENAI_REALTIME_VOICE` (default `coral`), `PIP_MODEL`
+(default `gpt-realtime`), `NEXT_PUBLIC_OPENAI_REALTIME_VOICE` (default `coral`), `JARVIS_MODEL`
 (reflection/chat, default `gpt-4o-mini`), `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`,
 `OPENAI_STT_MODEL`, `OPENAI_REALTIME_TOKEN_TTL_SECONDS`, and optional
 `OPENAI_REALTIME_FALLBACK_MODELS` (comma-separated).
 
-Without the OpenAI key the app still runs with friendly fallbacks so you can see Pip move.
+Without the OpenAI key the app still runs with friendly fallbacks so you can see Jarvis move.
 
 ## How it works
 
-- `lib/pipSprites.ts` — procedural scarlet-macaw sprite sheet (directions + expressions).
-- `lib/pipEngine.ts` — animation engine; imperative API (`speak`, `setExpression`, `react`,
-  `lookAt`, `setSpeaking`). `components/Pip.tsx` wraps it for React.
-- `components/PipStage.tsx` — orchestration: webcam vision → look-at/greet, OpenAI Realtime live
+- `lib/jarvisSprites.ts` — procedural sprite sheet for Jarvis's avatar (directions + expressions).
+- `lib/jarvisEngine.ts` — animation engine; imperative API (`speak`, `setExpression`, `react`,
+  `lookAt`, `setSpeaking`). `components/Jarvis.tsx` wraps it for React.
+- `components/JarvisStage.tsx` — orchestration: webcam vision → look-at/greet, OpenAI Realtime live
   voice (speech-to-speech) → transcript → identity → expression, then `/api/reflection` for
-  post-turn memory + affinity.
+  post-turn memory + affinity. Includes a collapsible typed-chat box and switchable personalities.
 - `lib/vision.ts` (Human), `lib/voice.ts` (Eagle), `lib/identity.ts` (fuse face + voice).
-- `lib/personality.ts` — Pip's persona + affinity/mood (with a kindness guardrail).
+- `lib/personality.ts` — Jarvis's persona + affinity/mood (with a kindness guardrail).
 - `app/api/*` — `realtime-token` (Realtime ephemeral token), `reflection`/`chat` (OpenAI
   structured output), `tts`, `stt`, `students`.
 

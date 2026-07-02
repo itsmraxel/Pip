@@ -5,22 +5,13 @@ import { openai } from "@ai-sdk/openai";
 import { generateText, Output } from "ai";
 import { enrichStudentFromMemory } from "@/lib/memory";
 import { buildSystemPrompt } from "@/lib/personality";
-import { reflectionResponseSchema } from "@/lib/pipSchema";
+import { getPersonality } from "@/lib/personalities";
+import { reflectionResponseSchema } from "@/lib/jarvisSchema";
 import type { ChatRequest, ReflectionRequest, ReflectionResponse } from "@/lib/types";
 
 export const maxDuration = 30;
 
-const MODEL = process.env.PIP_MODEL || "gpt-4o-mini";
-
-// #region agent log
-function debugLog(hypothesisId: string, message: string, data: unknown) {
-  fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '87d609' },
-    body: JSON.stringify({ sessionId: '87d609', runId: 'postfix', hypothesisId, location: 'app/api/reflection/route.ts', message, data, timestamp: Date.now() }),
-  }).catch(() => {});
-}
-// #endregion
+const MODEL = process.env.JARVIS_MODEL || "gpt-4o-mini";
 
 const fallbackReflection = (): ReflectionResponse => ({
   emotion: "curious",
@@ -36,10 +27,6 @@ const fallbackReflection = (): ReflectionResponse => ({
 
 export async function POST(req: Request) {
   const body = (await req.json()) as ReflectionRequest;
-
-  // #region agent log
-  debugLog('G', 'reflection request received', { userText: body.userText, assistantText: body.assistantText, contextStudentName: body.student?.name ?? null, contextStudentId: body.student?.id ?? null, faces: body.presence?.faces ?? null, hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY) });
-  // #endregion
 
   if (!process.env.OPENAI_API_KEY) {
     return Response.json(fallbackReflection());
@@ -61,12 +48,14 @@ export async function POST(req: Request) {
       : null,
     presence: body.presence,
     mood: body.mood,
+    personality: body.personality,
     history: body.history ?? [],
   };
 
+  const personaName = getPersonality(body.personality).name;
   const history = (body.history ?? [])
     .slice(-8)
-    .map((t) => `${t.role === "user" ? "Student" : "Pip"}: ${t.text}`)
+    .map((t) => `${t.role === "user" ? "Person" : personaName}: ${t.text}`)
     .join("\n");
 
   try {
@@ -81,31 +70,25 @@ export async function POST(req: Request) {
         buildSystemPrompt(chatContext),
         "",
         "REFLECTION MODE:",
-        "- Pip already spoke aloud. Do NOT write a new reply to the student.",
-        "- Analyze the exchange that just happened and report Pip's updated internal state.",
-        "- Set learnedName whenever the student states their own name (e.g. \"I'm Sam\", \"my name is Sam\"), EVEN IF the recognized name in context is different — a different spoken name means this is a different person.",
-        "- Do not invent a name; only set learnedName from a name the student actually said.",
+        `- ${personaName} already spoke aloud. Do NOT write a new reply to the person.`,
+        `- Analyze the exchange that just happened and report ${personaName}'s updated internal state.`,
+        "- Set learnedName whenever the person states their own name (e.g. \"I'm Sam\", \"my name is Sam\"), EVEN IF the recognized name in context is different — a different spoken name means this is a different person.",
+        "- Do not invent a name; only set learnedName from a name the person actually said.",
         "- Only set memoryNote or traitNote for genuinely new, stable facts.",
-        "- proactiveCue is optional: a tiny spontaneous line Pip might say if the room goes quiet.",
+        `- proactiveCue is optional: a tiny spontaneous line ${personaName} might say if the room goes quiet.`,
       ].join("\n"),
       prompt: [
         history ? `Recent conversation:\n${history}\n` : "",
-        `The student just said: "${body.userText}"`,
-        `Pip just replied aloud: "${body.assistantText}"`,
-        "Reflect on this exchange as Pip.",
+        `The person just said: "${body.userText}"`,
+        `${personaName} just replied aloud: "${body.assistantText}"`,
+        `Reflect on this exchange as ${personaName}.`,
       ]
         .filter(Boolean)
         .join("\n"),
     });
 
-    // #region agent log
-    debugLog('F', 'reflection model output', { userText: body.userText, contextStudentName: body.student?.name ?? null, learnedName: output.learnedName ?? null, memoryNote: output.memoryNote ?? null, traitNote: output.traitNote ?? null, askName: output.askName ?? null });
-    // #endregion
     return Response.json(output satisfies ReflectionResponse);
   } catch (err) {
-    // #region agent log
-    debugLog('F', 'reflection model THREW (fallback)', { error: err instanceof Error ? err.message : String(err) });
-    // #endregion
     console.error("reflection route error", err);
     return Response.json(fallbackReflection());
   }

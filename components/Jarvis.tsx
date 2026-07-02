@@ -1,10 +1,10 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { PipController } from "@/lib/pipEngine";
-import type { EmoteType, Expression, Mood } from "@/lib/pipEngine";
+import { JarvisController } from "@/lib/jarvisEngine";
+import type { EmoteType, Expression, Mood } from "@/lib/jarvisEngine";
 
-export interface PipHandle {
+export interface JarvisHandle {
   speak: (text: string) => void;
   setBubble: (text: string) => void;
   hideBubble: () => void;
@@ -26,25 +26,25 @@ export interface PipHandle {
   stageSize: () => { width: number; height: number };
 }
 
-interface PipProps {
+interface JarvisProps {
   onPoke?: () => void;
   onHover?: () => void;
   className?: string;
 }
 
-export const Pip = forwardRef<PipHandle, PipProps>(function Pip(
+export const Jarvis = forwardRef<JarvisHandle, JarvisProps>(function Jarvis(
   { onPoke, onHover, className },
   ref
 ) {
   const stageRef = useRef<HTMLDivElement>(null);
-  const controllerRef = useRef<PipController | null>(null);
+  const controllerRef = useRef<JarvisController | null>(null);
   const cbRef = useRef({ onPoke, onHover });
   cbRef.current = { onPoke, onHover };
 
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    const controller = new PipController({
+    const controller = new JarvisController({
       scale: 2.6,
       onPoke: () => cbRef.current.onPoke?.(),
       onHoverStart: () => cbRef.current.onHover?.(),
@@ -68,7 +68,7 @@ export const Pip = forwardRef<PipHandle, PipProps>(function Pip(
     };
   }, []);
 
-  useImperativeHandle(ref, (): PipHandle => ({
+  useImperativeHandle(ref, (): JarvisHandle => ({
     speak: (t) => controllerRef.current?.speak(t),
     setBubble: (t) => controllerRef.current?.setBubble(t),
     hideBubble: () => controllerRef.current?.hideBubble(),

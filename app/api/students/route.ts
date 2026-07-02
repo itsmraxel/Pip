@@ -3,19 +3,9 @@
 //   POST -> create a new student, or update an existing one by id.
 
 import { createStudent, listStudents, updateStudent } from "@/lib/db";
-import { usingConvex } from "@/lib/convexServer";
 import { applyAffinity } from "@/lib/personality";
 import type { Student } from "@/lib/types";
 
-// #region agent log
-function debugLog(hypothesisId: string, message: string, data: unknown) {
-  fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '87d609' },
-    body: JSON.stringify({ sessionId: '87d609', runId: 'postfix', hypothesisId, location: 'app/api/students/route.ts', message, data, timestamp: Date.now() }),
-  }).catch(() => {});
-}
-// #endregion
 
 type StudentWriteRequest = Partial<Student> & {
   id?: string;
@@ -48,14 +38,8 @@ function patchFromReflection(existing: Student, body: StudentWriteRequest): Part
 export async function GET() {
   try {
     const students = await listStudents();
-    // #region agent log
-    debugLog('C', 'GET listStudents ok', { usingConvex, convexUrlSet: Boolean(process.env.NEXT_PUBLIC_CONVEX_URL), convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null, count: students.length, names: students.map((s) => s.name) });
-    // #endregion
     return Response.json({ students });
   } catch (err) {
-    // #region agent log
-    debugLog('C', 'GET listStudents THREW', { usingConvex, convexUrlSet: Boolean(process.env.NEXT_PUBLIC_CONVEX_URL), convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null, error: err instanceof Error ? err.message : String(err) });
-    // #endregion
     console.error("students GET error", err);
     return Response.json({ students: [] as Student[], error: "db-failed" }, { status: 200 });
   }
@@ -88,9 +72,6 @@ export async function POST(req: Request) {
         : patchFromReflection(existing, body);
 
       const updated = await updateStudent(body.id, patch);
-      // #region agent log
-      debugLog('C', 'POST update result', { usingConvex, id: body.id, ok: Boolean(updated), resultId: updated?.id ?? null, resultName: updated?.name ?? null, memoryCount: updated?.memory.length ?? null });
-      // #endregion
       if (!updated) return Response.json({ error: "not-found" }, { status: 404 });
       return Response.json({ student: updated });
     }
@@ -105,14 +86,8 @@ export async function POST(req: Request) {
       traits: appendUnique(body.traits, body.traitNote),
       memory: appendUnique(body.memory, body.memoryNote),
     });
-    // #region agent log
-    debugLog('C', 'POST create result', { usingConvex, name, createdId: created.id });
-    // #endregion
     return Response.json({ student: created });
   } catch (err) {
-    // #region agent log
-    debugLog('C', 'POST THREW', { usingConvex, hasId: Boolean(body.id), error: err instanceof Error ? err.message : String(err) });
-    // #endregion
     console.error("students POST error", err);
     return Response.json({ error: "db-failed" }, { status: 500 });
   }

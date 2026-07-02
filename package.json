@@ -1,7 +1,7 @@
 {
-  "name": "pip",
+  "name": "jarvis",
   "version": "1.0.0",
-  "description": "Pip — a living, expressive parrot that talks to, sees, and remembers students.",
+  "description": "Jarvis — an expressive AI friend that talks to, sees, and remembers the people going through the bootcamp.",
   "private": true,
   "scripts": {
     "dev": "next dev",

@@ -1,16 +1,16 @@
-// Pip's animation engine — an imperative, framework-agnostic controller that
+// Jarvis's animation engine — an imperative, framework-agnostic controller that
 // renders the parrot (a DOM element backed by the procedural sprite sheet),
 // runs the animation loop, and exposes methods the React app drives:
-//   setCursor / lookAt / setTarget  — where Pip looks and hops
+//   setCursor / lookAt / setTarget  — where Jarvis looks and hops
 //   setExpression / react           — facial expressions + emote overlays
 //   setSpeaking / setListening      — talking + attentive poses
-//   speak / setBubble / hideBubble  — the on-Pip speech text
+//   speak / setBubble / hideBubble  — the on-Jarvis speech text
 //
 // Movement is direct steering toward a target (no page-obstacle pathfinding —
-// Pip lives on a full-screen stage now). The 8-direction sprite selection,
+// Jarvis lives on a full-screen stage now). The 8-direction sprite selection,
 // hop cadence, and idle behaviours are carried over from the original oneparrot.
 
-import { SHEET_COLS, SHEET_ROWS, SPRITE_SIZE, createParrotSpriteSheet } from "./pipSprites";
+import { SHEET_COLS, SHEET_ROWS, SPRITE_SIZE, createParrotSpriteSheet } from "./jarvisSprites";
 
 export type Expression =
   | "neutral"
@@ -39,7 +39,7 @@ const EMOTE_GLYPH: Record<EmoteType, string> = {
   happy: "😄",
 };
 
-// [col, row] into the sprite sheet (see pipSprites.ts for the layout).
+// [col, row] into the sprite sheet (see jarvisSprites.ts for the layout).
 const SPRITE_SETS: Record<string, [number, number][]> = {
   E: [[0, 0], [0, 1]],
   SE: [[1, 0], [1, 1]],
@@ -89,7 +89,7 @@ function vectorToDirection(dx: number, dy: number): string | null {
   return "E";
 }
 
-export interface PipOptions {
+export interface JarvisOptions {
   scale?: number;
   speed?: number;
   zIndex?: number;
@@ -97,8 +97,8 @@ export interface PipOptions {
   onHoverStart?: () => void;
 }
 
-export class PipController {
-  private opts: Required<Omit<PipOptions, "onPoke" | "onHoverStart">> & Pick<PipOptions, "onPoke" | "onHoverStart">;
+export class JarvisController {
+  private opts: Required<Omit<JarvisOptions, "onPoke" | "onHoverStart">> & Pick<JarvisOptions, "onPoke" | "onHoverStart">;
   private disp: number;
   private half: number;
   private sheetW: number;
@@ -146,7 +146,7 @@ export class PipController {
   private wasHovering = false;
   private lastPokeTs = 0;
 
-  constructor(options: PipOptions = {}) {
+  constructor(options: JarvisOptions = {}) {
     const scale = options.scale ?? 2.5;
     this.opts = {
       scale,
@@ -230,13 +230,13 @@ export class PipController {
     this.followCursor = on;
   }
 
-  /** Where Pip should look (e.g. the nearest face), in container-local coords. */
+  /** Where Jarvis should look (e.g. the nearest face), in container-local coords. */
   lookAt(x: number | null, y = 0) {
     this.gaze = x === null ? null : { x, y };
   }
 
   /**
-   * The person Pip should actively follow (container-local coords). Pip hops to
+   * The person Jarvis should actively follow (container-local coords). Jarvis hops to
    * track their horizontal position and keeps facing the viewer, leaning toward
    * whichever side they're on. Pass null when no one is visible.
    */
@@ -250,7 +250,7 @@ export class PipController {
     this.idleTime = 0;
   }
 
-  /** Where Pip should hop toward, in container-local coords. */
+  /** Where Jarvis should hop toward, in container-local coords. */
   setTarget(x: number | null, y = 0) {
     this.target = x === null ? null : { x, y };
   }
@@ -273,7 +273,7 @@ export class PipController {
     this.idleTime = 0;
   }
 
-  /** Let Pip settle into a sleepy visible idle when the room is empty. */
+  /** Let Jarvis settle into a sleepy visible idle when the room is empty. */
   nap() {
     this.follow = null;
     this.target = null;
@@ -445,7 +445,7 @@ export class PipController {
     this.clampToStage();
     this.applyPosition();
     // Take one step (swap the planted leg) every STRIDE_PX of ground covered,
-    // so the gait speeds up/slows down with Pip and the feet don't slide or
+    // so the gait speeds up/slows down with Jarvis and the feet don't slide or
     // freeze. No injected idle frame, no body hop.
     const moved = Math.hypot(this.posX - prevX, this.posY - prevY);
     this.stride += moved;
