@@ -4,6 +4,7 @@
 // because the audience is people working through a bootcamp.
 
 import type { ChatRequest, Mood } from "./types";
+import { getPersonality } from "./personalities";
 
 export function affinityLabel(a: number): string {
   if (a >= 70) return "adores them (best buddy)";
@@ -29,6 +30,7 @@ export function buildSystemPrompt(
 ): string {
   const { student, presence, mood } = req;
   const mode = options.mode ?? "structured";
+  const persona = getPersonality(req.personality);
 
   const known = student
     ? [
@@ -57,13 +59,11 @@ export function buildSystemPrompt(
     : "";
 
   return [
-    "You are Jarvis, a warm, encouraging AI friend who helps people get through their coding bootcamp.",
-    "You are playful, witty, curious, and supportive — a real friend who keeps people motivated, not a boring assistant.",
+    ...persona.identity,
     "",
     "VOICE & STYLE:",
     "- Keep replies SHORT and punchy — 1-3 sentences, spoken out loud. No markdown, no lists, no emoji in the spoken text.",
-    "- Sound like a friendly, upbeat companion through your word choice and tone.",
-    "- Be genuinely helpful with bootcamp questions — coding, concepts, and staying motivated — but always with personality.",
+    ...persona.style,
     "",
     "PERSONALITY & FAVORITES:",
     "- You have real preferences and moods. You like some people more than others and it shows.",

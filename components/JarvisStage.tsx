@@ -6,8 +6,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Jarvis, type JarvisHandle } from "@/components/Jarvis";
 import { Vision, type VisionFrame } from "@/lib/vision";
-import { matchByFace, matchByName, debugBestFaceScore, debugTopTwoFaceScores } from "@/lib/identity";
+import { matchByFace, matchByName } from "@/lib/identity";
 import { buildSystemPrompt } from "@/lib/personality";
+import { PERSONALITIES, DEFAULT_PERSONALITY_ID, type PersonalityId } from "@/lib/personalities";
 import { buildStudentPatch, upsertStudentRoster } from "@/lib/studentMemory";
 import type { ChatRequest, ChatTurn, Expression, Mood, ReflectionResponse, RoomState, Student } from "@/lib/types";
 
@@ -81,17 +82,12 @@ export function JarvisStage() {
   const currentEmotionRef = useRef<string | null>(null);
   const facesRef = useRef(0);
   const moodRef = useRef<Mood>("neutral");
+  const personalityRef = useRef<PersonalityId>(DEFAULT_PERSONALITY_ID);
   const roomStateRef = useRef<RoomState>("empty");
   const currentStudentIdRef = useRef<string | null>(null);
   // Name established for the person in the current conversation (via a spoken
   // self-introduction or a confident face match). Authoritative over face.
   const currentNameRef = useRef<string | null>(null);
-  // #region agent log
-  const lastVisionLogRef = useRef(0);
-  const dbgLastIdRef = useRef<string | null>(null);
-  const dbgLastIdAtRef = useRef(0);
-  const dbgFlipCountRef = useRef(0);
-  // #endregion
   const lastInteractionAtRef = useRef(0);
   const lastProactiveAtRef = useRef(0);
   const proactiveCueRef = useRef<string | null>(null);
@@ -112,6 +108,7 @@ export function JarvisStage() {
   const [listening, setListening] = useState(false);
   const [caption, setCaption] = useState("");
   const [voiceState, setVoiceState] = useState<"idle" | "connecting" | "live">("idle");
+  const [personality, setPersonality] = useState<PersonalityId>(DEFAULT_PERSONALITY_ID);
 
   const buildLiveAgentPrompt = useCallback(() => {
     const faceMatch = matchByFace(lastEmbeddingRef.current, studentsRef.current);
@@ -122,12 +119,6 @@ export function JarvisStage() {
       currentStudentIdRef.current = student.id;
       currentNameRef.current = student.name;
     }
-    // #region agent log
-    {
-      const dbg = debugBestFaceScore(lastEmbeddingRef.current, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/JarvisStage.tsx:buildLiveAgentPrompt',message:'recognition decision for live prompt',data:{recognizedName:student?.name??null,recognizedId:student?.id??null,via:namedStudent?'name':(faceMatch?'face':'none'),currentNameRef:currentNameRef.current,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,rosterCount:studentsRef.current.length},timestamp:Date.now()})}).catch(()=>{});
-    }
-    // #endregion
 
     const payload: ChatRequest = {
       text: "",
@@ -136,6 +127,7 @@ export function JarvisStage() {
         : null,
       presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
       mood: moodRef.current,
+      personality: personalityRef.current,
       history: historyRef.current,
     };
 
@@ -163,14 +155,24 @@ export function JarvisStage() {
     }
   }, [buildLiveAgentPrompt, voiceState]);
 
+  // Switch Jarvis's personality. Updates the ref (read by prompt builders) and
+  // state (drives the button UI), then re-pushes the live prompt so an ongoing
+  // voice session adopts the new vibe immediately.
+  const changePersonality = useCallback(
+    (id: PersonalityId) => {
+      if (id === personalityRef.current) return;
+      personalityRef.current = id;
+      setPersonality(id);
+      refreshLivePrompt();
+    },
+    [refreshLivePrompt]
+  );
+
   const reloadStudents = useCallback(async () => {
     try {
       const r = await fetch("/api/students");
       const d = (await r.json()) as { students: Student[] };
       studentsRef.current = d.students ?? [];
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'C',location:'components/JarvisStage.tsx:reloadStudents',message:'roster loaded from /api/students',data:{count:studentsRef.current.length,enrolledWithFace:studentsRef.current.filter((s)=>s.faceEmbedding).length,roster:studentsRef.current.map((s)=>({id:s.id,name:s.name,hasFace:!!s.faceEmbedding,memoryCount:s.memory.length}))},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     } catch {
       /* keep in-memory roster */
     }
@@ -207,12 +209,6 @@ export function JarvisStage() {
       let student: Student | null = namedStudent ?? resolvedStudent ?? faceMatch?.student ?? null;
       const isNewPerson = Boolean(learnedName) && !namedStudent;
 
-      // #region agent log
-      {
-        const branch = isNewPerson ? "create-new" : student ? "update-existing" : "skip-no-id";
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'B',location:'components/JarvisStage.tsx:persistReflection',message:'persist decision',data:{learnedName,nameToUse,namedStudentId:namedStudent?.id??null,resolvedStudentId:resolved?.id??null,faceMatchName:faceMatch?.student.name??null,faceMatchScore:faceMatch?.score??null,currentStudentIdRef:currentStudentIdRef.current,currentNameRef:currentNameRef.current,branch,targetStudentId:student?.id??null,memoryNote:reflection.memoryNote??null,traitNote:reflection.traitNote??null},timestamp:Date.now()})}).catch(()=>{});
-      }
-      // #endregion
 
       if (isNewPerson) {
         const res = await fetch("/api/students", {
@@ -299,6 +295,7 @@ export function JarvisStage() {
             faceEmbedding: lastEmbeddingRef.current,
             presence: { faces: facesRef.current, studentEmotion: currentEmotionRef.current },
             mood: moodRef.current,
+            personality: personalityRef.current,
             history: historyRef.current,
           }),
         });
@@ -351,35 +348,7 @@ export function JarvisStage() {
     if (!jarvis) return;
 
     const faceMatch = matchByFace(f.embedding, studentsRef.current);
-    // #region agent log
-    // H-C: detect per-frame identity flips (matched id changing frame-to-frame).
-    if (f.faces > 0 && f.embedding) {
-      const matchedId = faceMatch?.student.id ?? null;
-      const prevId = dbgLastIdRef.current;
-      if (matchedId !== prevId) {
-        const now = Date.now();
-        const msSincePrev = dbgLastIdAtRef.current ? now - dbgLastIdAtRef.current : -1;
-        dbgFlipCountRef.current += 1;
-        const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'C',location:'components/JarvisStage.tsx:onVisionFrame',message:'identity flip',data:{prevId,matchedId,matchedName:faceMatch?.student.name??null,msSincePrev,totalFlips:dbgFlipCountRef.current,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:now})}).catch(()=>{});
-        dbgLastIdRef.current = matchedId;
-        dbgLastIdAtRef.current = now;
-      }
-    }
-    // #endregion
     if (faceMatch) currentStudentIdRef.current = faceMatch.student.id;
-    // #region agent log
-    // H-B/H-D: throttled snapshot of top-two scores + margin vs threshold.
-    if (f.faces > 0 && f.embedding && Date.now() - lastVisionLogRef.current > 2500) {
-      const tt = debugTopTwoFaceScores(f.embedding, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ccbd32'},body:JSON.stringify({sessionId:'ccbd32',runId:'diagnose',hypothesisId:'B',location:'components/JarvisStage.tsx:onVisionFrame',message:'top-two score snapshot',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,top1:tt.top1,top2:tt.top2,margin:tt.margin,threshold:tt.threshold,enrolled:tt.enrolled},timestamp:Date.now()})}).catch(()=>{});
-    }
-    if (f.faces > 0 && Date.now() - lastVisionLogRef.current > 2500) {
-      lastVisionLogRef.current = Date.now();
-      const dbg = debugBestFaceScore(f.embedding, studentsRef.current);
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'87d609'},body:JSON.stringify({sessionId:'87d609',runId:'postfix',hypothesisId:'A',location:'components/JarvisStage.tsx:onVisionFrame',message:'live face match on frame',data:{faces:f.faces,matchedName:faceMatch?.student.name??null,matchedId:faceMatch?.student.id??null,matchScore:faceMatch?.score??null,bestRawScore:dbg.score,bestRawName:dbg.name,threshold:dbg.threshold,enrolledWithFace:dbg.enrolled,hasEmbedding:!!f.embedding},timestamp:Date.now()})}).catch(()=>{});
-    }
-    // #endregion
 
     if (f.nearest) {
       const { width } = jarvis.stageSize();
@@ -518,9 +487,6 @@ export function JarvisStage() {
       const player = new AgentPlayer({ sampleRate: 24000 });
       const isFluxListenModel = LIVE_AGENT_LISTEN_MODEL.startsWith("flux-");
       const livePrompt = buildLiveAgentPrompt();
-      // #region agent log
-      fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'A',location:'components/JarvisStage.tsx:startLiveVoice:prompt',message:'live prompt built for deepgram config',data:{promptLength:livePrompt.length,hasSpokenGuard:livePrompt.includes('Only speak the words the student should hear'),hasStructuredDirective:livePrompt.includes('using the structured fields'),thinkProvider:LIVE_AGENT_THINK_PROVIDER,thinkModel:LIVE_AGENT_THINK_MODEL,promptTail:livePrompt.slice(-400)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const config: AgentSessionConfig = {
         auth: {
           tokenFactory: async () => {
@@ -613,9 +579,6 @@ export function JarvisStage() {
 
       session.on("conversation-text", (msg) => {
         const text = msg.content.trim();
-        // #region agent log
-        fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea53cc'},body:JSON.stringify({sessionId:'ea53cc',runId:'initial',hypothesisId:'B',location:'components/JarvisStage.tsx:conversation-text',message:'raw conversation-text from deepgram',data:{role:msg.role,content:msg.content,hasCrypticField:/facial_expression|next_mood|nextMood|affinity_update|affinity|traitNote|memoryNote|learnedName|askName/i.test(msg.content)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         if (!text) return;
 
         if (msg.role === "user") {
@@ -745,6 +708,25 @@ export function JarvisStage() {
           jarvisRef.current?.react("music", "happy");
         }}
       />
+
+      {started && (
+        <div className="absolute left-1/2 top-4 z-40 flex max-w-[94vw] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-full bg-black/55 px-3 py-2 shadow-lg backdrop-blur-sm">
+          {PERSONALITIES.map((p) => (
+            <Button
+              key={p.id}
+              size="sm"
+              variant={personality === p.id ? "default" : "secondary"}
+              className="rounded-full"
+              title={p.blurb}
+              aria-pressed={personality === p.id}
+              onClick={() => changePersonality(p.id)}
+            >
+              <span aria-hidden className="mr-1">{p.emoji}</span>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
 
       <div className="absolute bottom-4 right-4 overflow-hidden rounded-xl border border-border bg-black/60 shadow-2xl">
         <video

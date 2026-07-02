@@ -1,8 +1,10 @@
 // Shared types for Jarvis's students and conversation.
 
 import type { Expression, EmoteType, Mood } from "./jarvisEngine";
+import type { PersonalityId } from "./personalities";
 
 export type { Expression, EmoteType, Mood };
+export type { PersonalityId };
 
 export interface Student {
   id: string;
@@ -31,6 +33,8 @@ export interface ChatRequest {
   student: (Pick<Student, "name" | "affinity" | "traits" | "memory"> & { id?: string }) | null;
   presence: { faces: number; studentEmotion?: string | null };
   mood: Mood;
+  /** Which personality preset Jarvis is currently wearing. */
+  personality?: PersonalityId;
   history: ChatTurn[];
 }
 
@@ -56,6 +60,8 @@ export interface ReflectionRequest {
   faceEmbedding: number[] | null;
   presence: { faces: number; studentEmotion?: string | null };
   mood: Mood;
+  /** Which personality preset Jarvis is currently wearing. */
+  personality?: PersonalityId;
   history: ChatTurn[];
 }
 

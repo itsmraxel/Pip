@@ -12,15 +12,6 @@ export const maxDuration = 30;
 
 const MODEL = process.env.JARVIS_MODEL || "gemini-2.5-flash";
 
-// #region agent log
-function debugLog(hypothesisId: string, message: string, data: unknown) {
-  fetch('http://127.0.0.1:7869/ingest/1322e9a3-526c-4f7e-837c-345fe456b255', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '87d609' },
-    body: JSON.stringify({ sessionId: '87d609', runId: 'postfix', hypothesisId, location: 'app/api/reflection/route.ts', message, data, timestamp: Date.now() }),
-  }).catch(() => {});
-}
-// #endregion
 
 const fallbackReflection = (): ReflectionResponse => ({
   emotion: "curious",
@@ -37,9 +28,6 @@ const fallbackReflection = (): ReflectionResponse => ({
 export async function POST(req: Request) {
   const body = (await req.json()) as ReflectionRequest;
 
-  // #region agent log
-  debugLog('G', 'reflection request received', { userText: body.userText, assistantText: body.assistantText, contextStudentName: body.student?.name ?? null, contextStudentId: body.student?.id ?? null, faces: body.presence?.faces ?? null, hasGoogleKey: Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY) });
-  // #endregion
 
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return Response.json(fallbackReflection());
@@ -61,6 +49,7 @@ export async function POST(req: Request) {
       : null,
     presence: body.presence,
     mood: body.mood,
+    personality: body.personality,
     history: body.history ?? [],
   };
 
@@ -100,14 +89,8 @@ export async function POST(req: Request) {
         .join("\n"),
     });
 
-    // #region agent log
-    debugLog('F', 'reflection model output', { userText: body.userText, contextStudentName: body.student?.name ?? null, learnedName: output.learnedName ?? null, memoryNote: output.memoryNote ?? null, traitNote: output.traitNote ?? null, askName: output.askName ?? null });
-    // #endregion
     return Response.json(output satisfies ReflectionResponse);
   } catch (err) {
-    // #region agent log
-    debugLog('F', 'reflection model THREW (fallback)', { error: err instanceof Error ? err.message : String(err) });
-    // #endregion
     console.error("reflection route error", err);
     return Response.json(fallbackReflection());
   }
