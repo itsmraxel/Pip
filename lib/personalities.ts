@@ -4,15 +4,9 @@
 // the same across all of them. The UI exposes these as buttons so the person
 // can change Jarvis's vibe on the fly — even mid live-voice session.
 
-export type PersonalityId =
-  | "buddy"
-  | "coach"
-  | "zen"
-  | "comedian"
-  | "professor";
-
 export interface Personality {
-  id: PersonalityId;
+  /** Stable id; the PersonalityId union is derived from the presets below. */
+  id: string;
   /** Short button label. */
   label: string;
   /** Emoji shown on the button. */
@@ -20,12 +14,14 @@ export interface Personality {
   /** One-line description (tooltip / helper text). */
   blurb: string;
   /** Identity lines: who Jarvis is in this mode (2 short lines). */
-  identity: string[];
+  identity: readonly string[];
   /** Tone bullets appended under VOICE & STYLE (each starts with "- "). */
-  style: string[];
+  style: readonly string[];
 }
 
-export const PERSONALITIES: Personality[] = [
+// Single source of truth. `PersonalityId` is derived from this list so the UI
+// and API typing can never drift from the presets that actually exist.
+export const PERSONALITIES = [
   {
     id: "buddy",
     label: "Buddy",
@@ -96,11 +92,16 @@ export const PERSONALITIES: Personality[] = [
       "- Check understanding lightly and build from what the person already knows.",
     ],
   },
-];
+] as const satisfies readonly Personality[];
+
+/** Union of valid personality ids, derived from PERSONALITIES (single source). */
+export type PersonalityId = (typeof PERSONALITIES)[number]["id"];
 
 export const DEFAULT_PERSONALITY_ID: PersonalityId = "buddy";
 
-const BY_ID = new Map(PERSONALITIES.map((p) => [p.id, p]));
+const BY_ID = new Map<PersonalityId, Personality>(
+  PERSONALITIES.map((p) => [p.id, p])
+);
 
 /** Resolve a personality by id, falling back to the default if unknown/null. */
 export function getPersonality(id: string | null | undefined): Personality {

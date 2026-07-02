@@ -719,6 +719,7 @@ export function JarvisStage() {
               className="rounded-full"
               title={p.blurb}
               aria-pressed={personality === p.id}
+              disabled={voiceState === "connecting"}
               onClick={() => changePersonality(p.id)}
             >
               <span aria-hidden className="mr-1">{p.emoji}</span>
